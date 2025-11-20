@@ -60,16 +60,11 @@ export class TelegramUpdate {
       expiresIn: '7d',
     });
 
-    // 5. URL твоего фронта (WebApp) — берём из ENV, а не из ngrok
-    // В Railway в Variables нужно задать:
-    // WEBAPP_URL=https://ТВОЙ-ФРОНТ.vercel.app
     const baseUrlFromEnv = this.config.get<string>('WEBAPP_URL');
-    const baseUrl = baseUrlFromEnv || 'https://monster-catch-front.vercel.app'; // <-- подставь сюда свой Vercel-URL, если пока без ENV
+    const baseUrl = baseUrlFromEnv || 'https://monstercatch.vercel.app';
 
     const urlWithToken = `${baseUrl}?token=${encodeURIComponent(token)}`;
 
-    // 6. Строим ЛИЧНУЮ реферальную ссылку
-    // Можно задать TELEGRAM_BOT_NAME в ENV, либо взять username бота из контекста
     const botNameFromConfig = this.config.get<string>('TELEGRAM_BOT_NAME');
     const botUsername =
       botNameFromConfig || (ctx as any).botInfo?.username || '<YOUR_BOT_NAME>';
