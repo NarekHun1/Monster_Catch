@@ -62,6 +62,8 @@ export class TelegramUpdate {
 
     const baseUrlFromEnv = this.config.get<string>('WEBAPP_URL');
     const baseUrl = baseUrlFromEnv || 'https://monster-catch-front.vercel.app';
+    console.log('BOT USERNAME:', (ctx as any).botInfo?.username);
+    console.log('WEBAPP_URL from env:', this.config.get('WEBAPP_URL'));
 
     const urlWithToken = `${baseUrl}?token=${encodeURIComponent(token)}`;
 
