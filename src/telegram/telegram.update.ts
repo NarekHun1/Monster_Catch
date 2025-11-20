@@ -27,7 +27,7 @@ export class TelegramUpdate {
       return;
     }
 
-    // 2. Создаём/обновляем пользователя
+    // 2. Создаём/обновляем пользователя в БД по данным телеграма
     const user = await this.userService.upsertFromTelegram({
       id: from.id,
       username: from.username,
@@ -60,18 +60,23 @@ export class TelegramUpdate {
       expiresIn: '7d',
     });
 
-    const baseUrl = 'https://deandrea-branchless-nathan.ngrok-free.dev';
+    // 5. URL твоего фронта (WebApp) — берём из ENV, а не из ngrok
+    // В Railway в Variables нужно задать:
+    // WEBAPP_URL=https://ТВОЙ-ФРОНТ.vercel.app
+    const baseUrlFromEnv = this.config.get<string>('WEBAPP_URL');
+    const baseUrl = baseUrlFromEnv || 'https://monster-catch-front.vercel.app'; // <-- подставь сюда свой Vercel-URL, если пока без ENV
+
     const urlWithToken = `${baseUrl}?token=${encodeURIComponent(token)}`;
 
-    // 5. Строим ЛИЧНУЮ реферальную ссылку
-    // можно взять из конфига TELEGRAM_BOT_NAME или ctx.botInfo?.username
+    // 6. Строим ЛИЧНУЮ реферальную ссылку
+    // Можно задать TELEGRAM_BOT_NAME в ENV, либо взять username бота из контекста
     const botNameFromConfig = this.config.get<string>('TELEGRAM_BOT_NAME');
     const botUsername =
       botNameFromConfig || (ctx as any).botInfo?.username || '<YOUR_BOT_NAME>';
 
     const myRefLink = `https://t.me/${botUsername}?start=ref_${from.id}`;
 
-    // 6. Отправляем кнопку "Играть" + ссылку для приглашений
+    // 7. Отправляем кнопку "Играть" + ссылку для приглашений
     await ctx.reply('Нажми кнопку, чтобы открыть игру 👇', {
       reply_markup: {
         keyboard: [

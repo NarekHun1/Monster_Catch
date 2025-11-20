@@ -14,9 +14,6 @@ import { ScheduleModule } from '@nestjs/schedule';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    ServeStaticModule.forRoot({
-      rootPath: '/Users/narek/WebstormProjects/MonsterCatch/webapp/dist', // 👈 твой dist
-    }),
     ScheduleModule.forRoot(),
     PrismaModule,
     UserModule,
