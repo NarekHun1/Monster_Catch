@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Game" ADD COLUMN     "clicks" INTEGER DEFAULT 0,
+ADD COLUMN     "epicCount" INTEGER DEFAULT 0;

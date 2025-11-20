@@ -1,0 +1,54 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id                    Int        @id @default(autoincrement())
+  telegramId            String     @unique
+  username              String?
+  firstName             String?
+  lastSeenAt            DateTime   @default(now())
+  createdAt             DateTime   @default(now())
+  games                 Game[]
+  stars                 Int        @default(0) // валюта для магазина
+  multiplierLevel       Int        @default(0) // уровень множителя
+  extraTimeLevel        Int        @default(0) // уровень дополнительного времени
+  epicBoostLevel        Int        @default(0) // шанс эпиков
+  dailyCatch1000ClaimAt DateTime?
+  dailyEpic100ClaimAt   DateTime?
+  dailyPlay3ClaimAt     DateTime?
+  referralsSent         Referral[] @relation("UserInviter")
+  referralsReceived     Referral[] @relation("UserInvited")
+  level                 Int        @default(1)
+  xp                    Int        @default(0)
+}
+
+model Game {
+  id         Int       @id @default(autoincrement())
+  user       User      @relation(fields: [userId], references: [id])
+  userId     Int
+  score      Int?
+  clicks     Int?      @default(0) // 👈 сколько монстров поймано за игру
+  epicCount  Int?      @default(0) // 👈 сколько эпиков
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+}
+
+model Referral {
+  id        Int     @id @default(autoincrement())
+  inviterId Int
+  invitedId Int
+  rewarded  Boolean @default(false)
+
+  inviter User @relation("UserInviter", fields: [inviterId], references: [id])
+  invited User @relation("UserInvited", fields: [invitedId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([inviterId, invitedId])
+}
