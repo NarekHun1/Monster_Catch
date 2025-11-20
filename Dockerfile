@@ -6,7 +6,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
-# 2. Копируем проект (включая prisma/)
+# 2. Копируем весь проект (включая prisma/)
 COPY . .
 
 # 3. Генерируем Prisma Client
@@ -21,7 +21,6 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Берём готовые зависимости, prisma и билд из builder
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/dist ./dist
