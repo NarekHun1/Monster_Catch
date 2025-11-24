@@ -75,7 +75,7 @@ export class TournamentBroadcastService {
                 {
                   text: '🎮 Открыть игру',
                   web_app: {
-                    url: 'https://monstercatch-production.up.railway.app',
+                    url: 'https://monster-catch-front.vercel.app',
                   }, // твой URL
                 },
               ],
