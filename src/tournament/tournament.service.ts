@@ -237,7 +237,6 @@ export class TournamentService {
   async finishExpiredTournaments() {
     const now = new Date();
 
-    // объявляем нормальный тип
     const results: {
       id: number;
       prizePool: number;
@@ -257,6 +256,7 @@ export class TournamentService {
     });
 
     for (const t of tournaments) {
+      // никого не было — просто закрываем турнир
       if (t.participants.length === 0) {
         await this.prisma.tournament.update({
           where: { id: t.id },
@@ -276,10 +276,47 @@ export class TournamentService {
       const [p1, p2, p3] = sorted;
 
       const pool = t.prizePool;
+      const count = sorted.length;
+      const fee = t.entryFee;
 
-      const prize1 = p1 ? Math.floor(pool * 0.4) : 0;
-      const prize2 = p2 ? Math.floor(pool * 0.2) : 0;
-      const prize3 = p3 ? Math.floor(pool * 0.1) : 0;
+      let prize1 = 0;
+      let prize2 = 0;
+      let prize3 = 0;
+
+      // 1 игрок — просто вернули ставку
+      if (count === 1 && p1) {
+        prize1 = Math.min(fee, pool);
+
+        // 2 игрока — победитель забирает весь фонд (2 монеты)
+      } else if (count === 2 && p1) {
+        prize1 = Math.min(2 * fee, pool);
+
+        // 3–4 игрока — фикс: 1 место 2 монеты, 2 место 1 монета
+      } else if (count >= 3 && count <= 4) {
+        if (p1) {
+          prize1 = Math.min(2 * fee, pool);
+        }
+        if (p2 && pool - prize1 >= fee) {
+          prize2 = fee;
+        }
+
+        // 5+ игроков — 40% фонду + по 1 монете 2 и 3 месту
+      } else if (count >= 5) {
+        if (p1) {
+          prize1 = Math.floor(pool * 0.4);
+        }
+        let remaining = pool - prize1;
+
+        if (p2 && remaining >= fee) {
+          prize2 = fee;
+          remaining -= fee;
+        }
+        if (p3 && remaining >= fee) {
+          prize3 = fee;
+          remaining -= fee;
+        }
+        // всё, что осталось в remaining, остаётся платформе
+      }
 
       const updates: any[] = [];
 
@@ -357,5 +394,4 @@ export class TournamentService {
       })),
     };
   }
-
 }
