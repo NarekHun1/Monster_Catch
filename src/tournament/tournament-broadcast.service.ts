@@ -68,20 +68,7 @@ export class TournamentBroadcastService {
 
     for (const u of users) {
       try {
-        await this.bot.telegram.sendMessage(Number(u.telegramId), text, {
-          reply_markup: {
-            inline_keyboard: [
-              [
-                {
-                  text: '🎮 Открыть игру',
-                  web_app: {
-                    url: 'https://monster-catch-front.vercel.app',
-                  }, // твой URL
-                },
-              ],
-            ],
-          },
-        });
+        await this.bot.telegram.sendMessage(Number(u.telegramId), text);
       } catch (e) {
         this.logger.warn(
           `Failed to send tournament msg to ${u.telegramId}: ${e.message}`,

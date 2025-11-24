@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import * as jwt from 'jsonwebtoken';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectBot } from 'nestjs-telegraf';
 import { Telegraf } from 'telegraf';
 
@@ -71,7 +72,6 @@ export class TournamentService {
     const entryFee = 1; // 1 монетка
 
     if (!tournament) {
-      // создаём новый
       tournament = await this.prisma.tournament.create({
         data: {
           startsAt: hourStart,
@@ -87,7 +87,6 @@ export class TournamentService {
         },
       });
     } else {
-      // обновляем статус при необходимости
       const status =
         now >= tournament.endsAt
           ? 'FINISHED'
@@ -146,7 +145,6 @@ export class TournamentService {
       throw new BadRequestException('Not enough coins to join tournament');
     }
 
-    // Проверяем, не участвует ли уже
     const existing = await this.prisma.tournamentParticipant.findUnique({
       where: {
         userId_tournamentId: {
@@ -164,7 +162,6 @@ export class TournamentService {
       };
     }
 
-    // Транзакция: списать монетку, создать участника, увеличить prizePool
     const [updatedUser, updatedTournament, participant] =
       await this.prisma.$transaction([
         this.prisma.user.update({
@@ -227,7 +224,6 @@ export class TournamentService {
     }
 
     if (score <= participant.score) {
-      // новый результат хуже или равен — игнорим
       return { updated: false, score: participant.score };
     }
 
@@ -239,7 +235,16 @@ export class TournamentService {
     return { updated: true, score: updated.score };
   }
 
-  /** Завершить турнир, раздать призы и уведомить победителей */
+  /** КРОН: вызывается, чтобы завершать турниры */
+  @Cron(CronExpression.EVERY_MINUTE) // можно сделать раз в 2 мин, если хочешь
+  async handleFinishCron() {
+    const res = await this.finishExpiredTournaments();
+    if (res.length > 0) {
+      this.logger.log(`Finished ${res.length} tournaments`);
+    }
+  }
+
+  /** Завершить турнир, раздать призы + уведомить победителей */
   async finishExpiredTournaments() {
     const now = new Date();
 
@@ -262,7 +267,6 @@ export class TournamentService {
     });
 
     for (const t of tournaments) {
-      // никого не было — просто закрываем турнир
       if (t.participants.length === 0) {
         await this.prisma.tournament.update({
           where: { id: t.id },
@@ -289,15 +293,10 @@ export class TournamentService {
       let prize2 = 0;
       let prize3 = 0;
 
-      // 1 игрок — просто вернули ставку
       if (count === 1 && p1) {
         prize1 = Math.min(fee, pool);
-
-        // 2 игрока — победитель забирает весь фонд (2 монеты)
       } else if (count === 2 && p1) {
         prize1 = Math.min(2 * fee, pool);
-
-        // 3–4 игрока — фикс: 1 место 2 монеты, 2 место 1 монета
       } else if (count >= 3 && count <= 4) {
         if (p1) {
           prize1 = Math.min(2 * fee, pool);
@@ -305,8 +304,6 @@ export class TournamentService {
         if (p2 && pool - prize1 >= fee) {
           prize2 = fee;
         }
-
-        // 5+ игроков — 40% фонда + по 1 монете 2 и 3 месту
       } else if (count >= 5) {
         if (p1) {
           prize1 = Math.floor(pool * 0.4);
@@ -321,7 +318,6 @@ export class TournamentService {
           prize3 = fee;
           remaining -= fee;
         }
-        // всё, что осталось в remaining, остаётся платформе
       }
 
       const updates: any[] = [];
@@ -351,7 +347,6 @@ export class TournamentService {
         );
       }
 
-      // применяем транзакцию (монеты + статус турнира)
       await this.prisma.$transaction([
         ...updates,
         this.prisma.tournament.update({
@@ -360,73 +355,38 @@ export class TournamentService {
         }),
       ]);
 
-      // формируем winners для ответа
-      const winnersForResult: {
-        userId: number;
-        prize: number;
-        score: number;
-      }[] = [];
-
-      if (p1 && prize1 > 0) {
-        winnersForResult.push({
-          userId: p1.userId,
-          prize: prize1,
-          score: p1.score,
-        });
-      }
-      if (p2 && prize2 > 0) {
-        winnersForResult.push({
-          userId: p2.userId,
-          prize: prize2,
-          score: p2.score,
-        });
-      }
-      if (p3 && prize3 > 0) {
-        winnersForResult.push({
-          userId: p3.userId,
-          prize: prize3,
-          score: p3.score,
-        });
-      }
+      const winners = [
+        p1 && { userId: p1.userId, prize: prize1, score: p1.score },
+        p2 && { userId: p2.userId, prize: prize2, score: p2.score },
+        p3 && { userId: p3.userId, prize: prize3, score: p3.score },
+      ].filter(Boolean) as { userId: number; prize: number; score: number }[];
 
       results.push({
         id: t.id,
         prizePool: t.prizePool,
-        winners: winnersForResult,
+        winners,
       });
 
-      // 🔔 УВЕДОМЛЕНИЕ ПОБЕДИТЕЛЕЙ В TELEGRAM
-      try {
-        // 1 место
-        if (p1 && prize1 > 0 && p1.user?.telegramId) {
-          const text =
-            `🏆 Почасовой турнир завершён!\n\n` +
-            `Ты занял 1 место с результатом ${p1.score} очков и получил +${prize1} монет 🪙\n\n` +
-            `Заходи в игру и забери ещё победы!`;
-          await this.bot.telegram.sendMessage(p1.user.telegramId, text);
-        }
+      // 🔔 УВЕДОМЛЕНИЯ победителям
+      for (const w of winners) {
+        const user = t.participants.find((p) => p.userId === w.userId)?.user;
+        if (!user || !user.telegramId) continue;
 
-        // 2 место
-        if (p2 && prize2 > 0 && p2.user?.telegramId) {
-          const text =
-            `🥈 Почасовой турнир завершён!\n\n` +
-            `Ты занял 2 место с результатом ${p2.score} очков и получил +${prize2} монет 🪙\n\n` +
-            `Новую попытку можно сделать уже в следующем турнире 😉`;
-          await this.bot.telegram.sendMessage(p2.user.telegramId, text);
-        }
+        const place =
+          w.userId === p1?.userId ? 1 : w.userId === p2?.userId ? 2 : 3;
 
-        // 3 место
-        if (p3 && prize3 > 0 && p3.user?.telegramId) {
-          const text =
-            `🥉 Почасовой турнир завершён!\n\n` +
-            `Ты занял 3 место с результатом ${p3.score} очков и получил +${prize3} монет 🪙\n\n` +
-            `Попробуй вырваться в топ-1 в следующем турике!`;
-          await this.bot.telegram.sendMessage(p3.user.telegramId, text);
+        const text =
+          place === 1
+            ? `🏆 Турнир завершён!\n\nТы занял 1 место с результатом ${w.score} очков и получил ${w.prize} монет 🪙`
+            : `🥈 Турнир завершён!\n\nТы занял ${place} место с результатом ${w.score} очков и получил ${w.prize} монет 🪙`;
+
+        try {
+          await this.bot.telegram.sendMessage(Number(user.telegramId), text);
+        } catch (err) {
+          this.logger.warn(
+            `Не удалось отправить уведомление пользователю ${user.id}`,
+          );
         }
-      } catch (err) {
-        this.logger.warn(
-          `Ошибка отправки уведомления победителям турнира ${t.id}: ${err}`,
-        );
       }
     }
 
@@ -435,7 +395,6 @@ export class TournamentService {
 
   /** Турнирная таблица по текущему турниру */
   async getCurrentLeaderboard() {
-    // 👉 всегда найдёт ИЛИ создаст турнир на текущий час
     const t = await this.getOrCreateCurrentTournament();
 
     const participants = await this.prisma.tournamentParticipant.findMany({
