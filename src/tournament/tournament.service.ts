@@ -2,10 +2,13 @@ import {
   BadRequestException,
   Injectable,
   UnauthorizedException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import * as jwt from 'jsonwebtoken';
+import { InjectBot } from 'nestjs-telegraf';
+import { Telegraf } from 'telegraf';
 
 interface JwtPayload {
   userId: number;
@@ -13,9 +16,12 @@ interface JwtPayload {
 
 @Injectable()
 export class TournamentService {
+  private readonly logger = new Logger(TournamentService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    @InjectBot() private readonly bot: Telegraf, // 👈 бот для уведомлений
   ) {}
 
   private getUserIdFromToken(token: string): number {
@@ -81,7 +87,7 @@ export class TournamentService {
         },
       });
     } else {
-      // можно при желании обновить статус
+      // обновляем статус при необходимости
       const status =
         now >= tournament.endsAt
           ? 'FINISHED'
@@ -233,7 +239,7 @@ export class TournamentService {
     return { updated: true, score: updated.score };
   }
 
-  /** Завершить турнир, раздать призы (можно дергать cron-ом раз в несколько минут) */
+  /** Завершить турнир, раздать призы и уведомить победителей */
   async finishExpiredTournaments() {
     const now = new Date();
 
@@ -300,7 +306,7 @@ export class TournamentService {
           prize2 = fee;
         }
 
-        // 5+ игроков — 40% фонду + по 1 монете 2 и 3 месту
+        // 5+ игроков — 40% фонда + по 1 монете 2 и 3 месту
       } else if (count >= 5) {
         if (p1) {
           prize1 = Math.floor(pool * 0.4);
@@ -345,6 +351,7 @@ export class TournamentService {
         );
       }
 
+      // применяем транзакцию (монеты + статус турнира)
       await this.prisma.$transaction([
         ...updates,
         this.prisma.tournament.update({
@@ -353,15 +360,74 @@ export class TournamentService {
         }),
       ]);
 
+      // формируем winners для ответа
+      const winnersForResult: {
+        userId: number;
+        prize: number;
+        score: number;
+      }[] = [];
+
+      if (p1 && prize1 > 0) {
+        winnersForResult.push({
+          userId: p1.userId,
+          prize: prize1,
+          score: p1.score,
+        });
+      }
+      if (p2 && prize2 > 0) {
+        winnersForResult.push({
+          userId: p2.userId,
+          prize: prize2,
+          score: p2.score,
+        });
+      }
+      if (p3 && prize3 > 0) {
+        winnersForResult.push({
+          userId: p3.userId,
+          prize: prize3,
+          score: p3.score,
+        });
+      }
+
       results.push({
         id: t.id,
         prizePool: t.prizePool,
-        winners: [
-          p1 && { userId: p1.userId, prize: prize1, score: p1.score },
-          p2 && { userId: p2.userId, prize: prize2, score: p2.score },
-          p3 && { userId: p3.userId, prize: prize3, score: p3.score },
-        ].filter(Boolean) as { userId: number; prize: number; score: number }[],
+        winners: winnersForResult,
       });
+
+      // 🔔 УВЕДОМЛЕНИЕ ПОБЕДИТЕЛЕЙ В TELEGRAM
+      try {
+        // 1 место
+        if (p1 && prize1 > 0 && p1.user?.telegramId) {
+          const text =
+            `🏆 Почасовой турнир завершён!\n\n` +
+            `Ты занял 1 место с результатом ${p1.score} очков и получил +${prize1} монет 🪙\n\n` +
+            `Заходи в игру и забери ещё победы!`;
+          await this.bot.telegram.sendMessage(p1.user.telegramId, text);
+        }
+
+        // 2 место
+        if (p2 && prize2 > 0 && p2.user?.telegramId) {
+          const text =
+            `🥈 Почасовой турнир завершён!\n\n` +
+            `Ты занял 2 место с результатом ${p2.score} очков и получил +${prize2} монет 🪙\n\n` +
+            `Новую попытку можно сделать уже в следующем турнире 😉`;
+          await this.bot.telegram.sendMessage(p2.user.telegramId, text);
+        }
+
+        // 3 место
+        if (p3 && prize3 > 0 && p3.user?.telegramId) {
+          const text =
+            `🥉 Почасовой турнир завершён!\n\n` +
+            `Ты занял 3 место с результатом ${p3.score} очков и получил +${prize3} монет 🪙\n\n` +
+            `Попробуй вырваться в топ-1 в следующем турике!`;
+          await this.bot.telegram.sendMessage(p3.user.telegramId, text);
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Ошибка отправки уведомления победителям турнира ${t.id}: ${err}`,
+        );
+      }
     }
 
     return results;
