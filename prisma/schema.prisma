@@ -8,24 +8,26 @@ generator client {
 }
 
 model User {
-  id                    Int        @id @default(autoincrement())
-  telegramId            String     @unique
+  id                    Int                     @id @default(autoincrement())
+  telegramId            String                  @unique
   username              String?
   firstName             String?
-  lastSeenAt            DateTime   @default(now())
-  createdAt             DateTime   @default(now())
+  lastSeenAt            DateTime                @default(now())
+  createdAt             DateTime                @default(now())
   games                 Game[]
-  stars                 Int        @default(0) // валюта для магазина
-  multiplierLevel       Int        @default(0) // уровень множителя
-  extraTimeLevel        Int        @default(0) // уровень дополнительного времени
-  epicBoostLevel        Int        @default(0) // шанс эпиков
+  stars                 Int                     @default(0) // валюта для магазина
+  multiplierLevel       Int                     @default(0) // уровень множителя
+  extraTimeLevel        Int                     @default(0) // уровень дополнительного времени
+  epicBoostLevel        Int                     @default(0) // шанс эпиков
   dailyCatch1000ClaimAt DateTime?
   dailyEpic100ClaimAt   DateTime?
   dailyPlay3ClaimAt     DateTime?
-  referralsSent         Referral[] @relation("UserInviter")
-  referralsReceived     Referral[] @relation("UserInvited")
-  level                 Int        @default(1)
-  xp                    Int        @default(0)
+  referralsSent         Referral[]              @relation("UserInviter")
+  referralsReceived     Referral[]              @relation("UserInvited")
+  level                 Int                     @default(1)
+  xp                    Int                     @default(0)
+  coins                 Int                     @default(0)
+  tournaments           TournamentParticipant[]
 }
 
 model Game {
@@ -51,4 +53,36 @@ model Referral {
   createdAt DateTime @default(now())
 
   @@unique([inviterId, invitedId])
+}
+
+model Tournament {
+  id           Int              @id @default(autoincrement())
+  startsAt     DateTime
+  endsAt       DateTime
+  joinDeadline DateTime
+  entryFee     Int // вход в монетках
+  prizePool    Int              @default(0)
+  status       TournamentStatus @default(PLANNED)
+  createdAt    DateTime         @default(now())
+
+  participants TournamentParticipant[]
+}
+
+model TournamentParticipant {
+  id           Int      @id @default(autoincrement())
+  userId       Int
+  tournamentId Int
+  score        Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  user       User       @relation(fields: [userId], references: [id])
+  tournament Tournament @relation(fields: [tournamentId], references: [id])
+
+  @@unique([userId, tournamentId])
+}
+
+enum TournamentStatus {
+  PLANNED
+  ACTIVE
+  FINISHED
 }
