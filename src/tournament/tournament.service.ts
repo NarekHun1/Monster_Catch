@@ -332,8 +332,8 @@ export class TournamentService {
 
   /** Турнирная таблица по текущему турниру */
   async getCurrentLeaderboard() {
-    const t = await this.getCurrentTournament();
-    if (!t) return null;
+    // 👉 всегда найдёт ИЛИ создаст турнир на текущий час
+    const t = await this.getOrCreateCurrentTournament();
 
     const participants = await this.prisma.tournamentParticipant.findMany({
       where: { tournamentId: t.id },
@@ -352,9 +352,10 @@ export class TournamentService {
       status: t.status,
       participants: participants.map((p) => ({
         userId: p.userId,
-        username: p.user.username,
+        username: p.user.username ?? p.user.firstName ?? null,
         score: p.score,
       })),
     };
   }
+
 }
