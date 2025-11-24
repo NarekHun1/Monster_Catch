@@ -45,6 +45,7 @@ export class UserController {
       username: user.username,
       firstName: user.firstName,
       stars: user.stars,
+      coins: user.coins,
       multiplierLevel: user.multiplierLevel,
       extraTimeLevel: user.extraTimeLevel,
       epicBoostLevel: user.epicBoostLevel,
