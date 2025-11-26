@@ -3,6 +3,7 @@ import { TelegrafModule } from 'nestjs-telegraf';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TelegramUpdate } from './telegram.update';
 import { UserModule } from '../user/user.module';
+import { TelegramWebappController } from './telegram-webapp.controller';
 
 @Module({
   imports: [
@@ -19,5 +20,6 @@ import { UserModule } from '../user/user.module';
     }),
   ],
   providers: [TelegramUpdate],
+  controllers: [TelegramWebappController],
 })
 export class TelegramModule {}
