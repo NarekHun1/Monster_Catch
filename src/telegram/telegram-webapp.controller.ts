@@ -5,7 +5,6 @@ import { ConfigService } from '@nestjs/config';
 import { UserService } from '../user/user.service';
 import * as jwt from 'jsonwebtoken';
 
-
 @Controller('telegram')
 export class TelegramWebappController {
   constructor(
