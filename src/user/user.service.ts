@@ -18,69 +18,45 @@ export class UserService {
       take: 50,
     });
   }
+
   async findById(id: number) {
     return this.prisma.user.findUnique({ where: { id } });
   }
-  async registerReferralByTelegramId(
-    inviterTelegramId: string,
-    invitedUserId: number,
-  ) {
-    const inviter = await this.prisma.user.findUnique({
-      where: { telegramId: inviterTelegramId },
-    });
 
-    if (!inviter) {
-      console.log('Inviter not found for telegramId =', inviterTelegramId);
-      return;
-    }
-
-    // защита от самореферала
-    if (inviter.id === invitedUserId) {
-      console.log('User tried to refer himself, skip');
-      return;
-    }
-
-    try {
-      await this.prisma.referral.upsert({
-        where: {
-          inviterId_invitedId: {
-            inviterId: inviter.id,
-            invitedId: invitedUserId,
-          },
-        },
-        update: {}, // ничего не меняем, просто не даём создать дубль
-        create: {
-          inviterId: inviter.id,
-          invitedId: invitedUserId,
-        },
-      });
-    } catch (e) {
-      console.log('Referral upsert error:', e);
-    }
-  }
   async findByTelegramId(telegramId: string): Promise<User | null> {
     return this.prisma.user.findUnique({
       where: { telegramId },
     });
   }
-  async addCoinsByTelegramId(telegramId: string, coins: number): Promise<User> {
-    const user = await this.prisma.user.findUnique({
-      where: { telegramId },
-    });
 
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
+  // ✔ Правильный безопасный инкремент (Prisma)
+  async addCoins(userId: number, coins: number): Promise<User> {
     return this.prisma.user.update({
-      where: { telegramId },
+      where: { id: userId },
       data: {
-        coins: user.coins + coins,
+        coins: {
+          increment: coins,
+        },
       },
     });
   }
+
+  // ✔ Доп вариант через telegramId
+  async addCoinsByTelegramId(telegramId: string, coins: number): Promise<User> {
+    return this.prisma.user.update({
+      where: { telegramId },
+      data: {
+        coins: {
+          increment: coins,
+        },
+      },
+    });
+  }
+
+  // ✔ Создание записи об оплате
   async createPayment(data: {
     telegramPaymentChargeId: string;
+    providerPaymentChargeId?: string | null;
     starsAmount: number;
     coinsAmount: number;
     payload?: string;
@@ -91,6 +67,7 @@ export class UserService {
     });
   }
 
+  // ✔ Upsert при входе в Telegram Mini App
   async upsertFromTelegram(telegramUser: TelegramUserPayload): Promise<User> {
     const telegramId = telegramUser.id.toString();
 
@@ -107,5 +84,37 @@ export class UserService {
         firstName: telegramUser.first_name ?? undefined,
       },
     });
+  }
+
+  // ✔ Рефералка
+  async registerReferralByTelegramId(
+    inviterTelegramId: string,
+    invitedUserId: number,
+  ) {
+    const inviter = await this.prisma.user.findUnique({
+      where: { telegramId: inviterTelegramId },
+    });
+
+    if (!inviter) return;
+
+    if (inviter.id === invitedUserId) return;
+
+    try {
+      await this.prisma.referral.upsert({
+        where: {
+          inviterId_invitedId: {
+            inviterId: inviter.id,
+            invitedId: invitedUserId,
+          },
+        },
+        update: {},
+        create: {
+          inviterId: inviter.id,
+          invitedId: invitedUserId,
+        },
+      });
+    } catch (e) {
+      console.log('Referral upsert error:', e);
+    }
   }
 }
