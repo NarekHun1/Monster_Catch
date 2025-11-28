@@ -58,6 +58,38 @@ export class UserService {
       console.log('Referral upsert error:', e);
     }
   }
+  async findByTelegramId(telegramId: string): Promise<User | null> {
+    return this.prisma.user.findUnique({
+      where: { telegramId },
+    });
+  }
+  async addCoinsByTelegramId(telegramId: string, coins: number): Promise<User> {
+    const user = await this.prisma.user.findUnique({
+      where: { telegramId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    return this.prisma.user.update({
+      where: { telegramId },
+      data: {
+        coins: user.coins + coins,
+      },
+    });
+  }
+  async createPayment(data: {
+    telegramPaymentChargeId: string;
+    starsAmount: number;
+    coinsAmount: number;
+    payload?: string;
+    userId: number;
+  }) {
+    return this.prisma.payment.create({
+      data,
+    });
+  }
 
   async upsertFromTelegram(telegramUser: TelegramUserPayload): Promise<User> {
     const telegramId = telegramUser.id.toString();

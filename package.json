@@ -21,7 +21,6 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:generate": "prisma generate",
     "postinstall": ""
-
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
@@ -30,13 +29,15 @@
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/schedule": "^6.0.1",
     "@nestjs/serve-static": "^5.0.4",
+    "@prisma/client": "^6.19.0",
+    "axios": "^1.13.2",
+    "dotenv": "^17.2.3",
     "jsonwebtoken": "^9.0.2",
     "nestjs-telegraf": "^2.9.1",
+    "prisma": "^6.19.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "telegraf": "^4.16.3",
-    "prisma": "^6.19.0",
-    "@prisma/client": "^6.19.0"
+    "telegraf": "^4.16.3"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
@@ -66,13 +67,19 @@
     "typescript-eslint": "^8.20.0"
   },
   "jest": {
-    "moduleFileExtensions": ["js", "json", "ts"],
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
     },
-    "collectCoverageFrom": ["**/*.(t|j)s"],
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
   }

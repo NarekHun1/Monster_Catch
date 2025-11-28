@@ -11,6 +11,7 @@ import { ReferralModule } from '../referal/referral.module';
 import { DailyQuestsBroadcastModule } from './daily-quests/daily-quests-broadcast.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TournamentModule } from './tournament/tournament.module';
+import { PaymentsModule } from '../payments /payments.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { TournamentModule } from './tournament/tournament.module';
     ReferralModule,
     DailyQuestsBroadcastModule,
     TournamentModule,
+    PaymentsModule,
   ],
 })
 export class AppModule {}

@@ -28,6 +28,7 @@ model User {
   referralsReceived     Referral[]              @relation("UserInvited")
   referralsSent         Referral[]              @relation("UserInviter")
   tournaments           TournamentParticipant[]
+  Payment               Payment[]
 }
 
 model Game {
@@ -75,6 +76,18 @@ model TournamentParticipant {
   user         User       @relation(fields: [userId], references: [id])
 
   @@unique([userId, tournamentId])
+}
+
+model Payment {
+  id                      Int      @id @default(autoincrement())
+  telegramPaymentChargeId String   @unique
+  providerPaymentChargeId String? // для Stars обычно null
+  starsAmount             Int
+  coinsAmount             Int
+  payload                 String?
+  user                    User     @relation(fields: [userId], references: [id])
+  userId                  Int
+  createdAt               DateTime @default(now())
 }
 
 enum TournamentStatus {
