@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { ServeStaticModule } from '@nestjs/serve-static';
 import { PrismaModule } from './prisma/prisma.module';
 import { UserModule } from './user/user.module';
 import { TelegramModule } from './telegram/telegram.module';
@@ -12,7 +11,6 @@ import { DailyQuestsBroadcastModule } from './daily-quests/daily-quests-broadcas
 import { ScheduleModule } from '@nestjs/schedule';
 import { TournamentModule } from './tournament/tournament.module';
 import { PaymentModule } from '../payments /payments.module';
-import { PaymentService } from '../payments /payment.service';
 
 @Module({
   imports: [
@@ -28,7 +26,6 @@ import { PaymentService } from '../payments /payment.service';
     DailyQuestsBroadcastModule,
     TournamentModule,
     PaymentModule,
-    PaymentService,
   ],
 })
 export class AppModule {}
