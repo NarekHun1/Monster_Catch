@@ -1,199 +1,132 @@
 import { Ctx, Start, Update, On } from 'nestjs-telegraf';
 import { Context } from 'telegraf';
-import { UserService } from '../user/user.service';
 import { ConfigService } from '@nestjs/config';
+import { UserService } from '../user/user.service';
 import { PaymentService } from '../payments/payment.service';
 
 @Update()
 export class TelegramUpdate {
   constructor(
-    private readonly userService: UserService,
-    private readonly paymentService: PaymentService,
+    private readonly users: UserService,
+    private readonly payments: PaymentService,
     private readonly config: ConfigService,
   ) {}
 
-  // ────────────────────────────────────────────────
-  // 1️⃣ START — открытие WebApp
-  // ────────────────────────────────────────────────
+  // -----------------------------
+  // START → открыть WebApp
+  // -----------------------------
   @Start()
   async onStart(@Ctx() ctx: Context) {
-    console.log('onStart from:', ctx.from);
+    const url =
+      this.config.get('WEBAPP_URL') || 'https://monster-catch-front.vercel.app';
 
-    const startPayload = (ctx as any).startPayload as string | undefined;
-    const from = ctx.from;
-
-    if (!from) {
-      await ctx.reply('Не могу определить пользователя.');
-      return;
-    }
-
-    // Создаём/обновляем пользователя
-    const user = await this.userService.upsertFromTelegram({
-      id: from.id,
-      username: from.username,
-      first_name: from.first_name,
-    });
-
-    // РЕФЕРАЛКА
-    if (startPayload?.startsWith('ref_')) {
-      const inviterId = startPayload.replace('ref_', '');
-      if (String(from.id) !== inviterId) {
-        await this.userService.registerReferralByTelegramId(inviterId, user.id);
-      }
-    }
-
-    const baseUrl =
-      this.config.get<string>('WEBAPP_URL') ||
-      'https://monster-catch-front.vercel.app';
-
-    const botUsername =
-      this.config.get<string>('TELEGRAM_BOT_NAME') ||
-      (ctx as any).botInfo?.username;
-
-    const refLink = `https://t.me/${botUsername}?start=ref_${from.id}`;
-
-    await ctx.reply('Нажми кнопку, чтобы открыть игру 👇', {
+    await ctx.reply('Открыть игру 👇', {
       reply_markup: {
         inline_keyboard: [
-          [
-            {
-              text: '🎮 Играть',
-              web_app: { url: baseUrl },
-            },
-          ],
+          [{ text: '🎮 Играть', web_app: { url } }],
         ],
       },
     });
-
-    await ctx.reply(
-      `Твоя реферальная ссылка:\n${refLink}\n\nПриглашай друзей и получай награды ⭐`,
-    );
   }
 
-  // ────────────────────────────────────────────────
-  // 2️⃣ WebApp sendData() — здесь БЫЛА ОШИБКА
-  // ────────────────────────────────────────────────
+  // -----------------------------
+  // WebApp → sendData()
+  // -----------------------------
   @On('message')
-  async onWebAppMessage(@Ctx() ctx: any) {
-    const raw = ctx?.webAppData?.data;
-    if (!raw) return;
+  async onWebAppData(@Ctx() ctx: any) {
+    const raw = ctx?.web_app_data?.data;
 
-    console.log('📩 WebApp RAW DATA:', raw);
+    if (!raw) return; // не WebApp сообщение
 
-    // Проверка: если приходит "[object Object]" → WebApp отправил не JSON
-    if (raw === '[object Object]') {
-      console.log('❌ WebApp отправил неправильный формат данных');
-      return ctx.reply('Ошибка: WebApp отправил неправильные данные ❌');
-    }
+    console.log('RAW:', raw);
 
     let data: any;
     try {
       data = JSON.parse(raw);
     } catch (e) {
-      console.log('❌ JSON parse error:', e);
-      return ctx.reply('Ошибка при чтении данных WebApp ❌');
+      return ctx.reply('Ошибка формата данных ❌');
     }
 
-    console.log('📦 Parsed DATA:', data);
-
-    // Покупка монет
     if (data.action === 'buy_coins') {
       return this.handleBuyCoins(ctx, data.packId);
     }
   }
 
-  // ────────────────────────────────────────────────
-  // 3️⃣ Отправка invoice Stars
-  // ────────────────────────────────────────────────
+  // -----------------------------
+  // Invoice Stars
+  // -----------------------------
   async handleBuyCoins(ctx: Context, packId: string) {
-    console.log('💳 Покупка монет:', packId);
+    console.log('💳 Покупка:', packId);
 
     const packs = {
       coins_500: {
         starsPrice: 100,
         coins: 500,
         title: '500 монет',
-        description: 'Пакет 500 монет для игры',
+        description: 'Пакет монет для игры',
       },
       coins_1000: {
         starsPrice: 180,
         coins: 1000,
         title: '1000 монет',
-        description: 'Пакет 1000 монет для игры',
+        description: 'Пакет монет для игры',
+      },
+      coins_2500: {
+        starsPrice: 400,
+        coins: 2500,
+        title: '2500 монет',
+        description: 'Большой пакет монет',
       },
     };
 
-    const pack = packs[packId as keyof typeof packs];
+    const pack = packs[packId];
     if (!pack) return ctx.reply('Неизвестный пакет ❌');
 
     await ctx.replyWithInvoice({
       title: pack.title,
       description: pack.description,
-      payload: `buy_coins_${packId}`,
-      provider_token: '', // Stars → всегда пустой
+      payload: `buy_${packId}`,
+      provider_token: '', // Stars → пусто
       currency: 'XTR',
-      prices: [
-        {
-          label: pack.title,
-          amount: pack.starsPrice,
-        },
-      ],
+      prices: [{ label: pack.title, amount: pack.starsPrice }],
     });
-
-    console.log(`📨 Invoice отправлен!`);
   }
 
-  // ────────────────────────────────────────────────
-  // 4️⃣ pre_checkout_query
-  // ────────────────────────────────────────────────
+  // -----------------------------
+  // Pre-checkout
+  // -----------------------------
   @On('pre_checkout_query')
   async onPreCheckout(@Ctx() ctx: any) {
-    console.log('⚙️ pre_checkout_query received');
     await ctx.answerPreCheckoutQuery(true);
   }
 
-  // ────────────────────────────────────────────────
-  // 5️⃣ Успешный платеж Stars
-  // ────────────────────────────────────────────────
+  // -----------------------------
+  // Успешная оплата
+  // -----------------------------
   @On('successful_payment')
   async onSuccess(@Ctx() ctx: any) {
-    const payment = ctx.message.successful_payment;
+    const p = ctx.message.successful_payment;
+    const telegramId = String(ctx.from.id);
 
-    console.log('🎉 SUCCESSFUL PAYMENT:', payment);
-
-    const payload = payment.invoice_payload;
-    const packId = payload.replace('buy_coins_', '');
+    const packId = p.invoice_payload.replace('buy_', '');
 
     const packs = {
-      coins_500: { coins: 500 },
-      coins_1000: { coins: 1000 },
+      coins_500: 500,
+      coins_1000: 1000,
+      coins_2500: 2500,
     };
 
-    const pack = packs[packId as keyof typeof packs];
-    if (!pack) {
-      return ctx.reply('Ошибка: товар не найден ❌');
-    }
+    const coins = packs[packId];
+    if (!coins) return ctx.reply('Ошибка товара ❌');
 
-    const telegramId = String(ctx.from.id);
-    const user = await this.userService.findByTelegramId(telegramId);
-
-    if (!user) {
-      return ctx.reply('Ошибка: пользователь не найден ❌');
-    }
-
-    // Сохранить платёж
-    await this.paymentService.registerPayment({
-      telegramPaymentChargeId: payment.telegram_payment_charge_id,
-      starsAmount: payment.total_amount,
-      coinsAmount: pack.coins,
-      payload,
+    await this.payments.registerPayment({
+      telegramPaymentChargeId: p.telegram_payment_charge_id,
+      starsAmount: p.total_amount,
+      coinsAmount: coins,
       userTelegramId: telegramId,
+      payload: p.invoice_payload,
     });
 
-    await ctx.reply(
-      `🎉 Покупка успешна!\nТебе начислено: +${pack.coins} монет 🪙`,
-    );
-
-    console.log(`💰 ${telegramId}: +${pack.coins} монет`);
+    await ctx.reply(`🎉 Успешно!\nНачислено +${coins} монет 🪙`);
   }
 }
