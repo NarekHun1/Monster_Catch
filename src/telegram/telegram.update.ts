@@ -22,9 +22,7 @@ export class TelegramUpdate {
 
     await ctx.reply('Открыть игру 👇', {
       reply_markup: {
-        inline_keyboard: [
-          [{ text: '🎮 Играть', web_app: { url } }],
-        ],
+        inline_keyboard: [[{ text: '🎮 Играть', web_app: { url } }]],
       },
     });
   }
@@ -58,45 +56,31 @@ export class TelegramUpdate {
     }
   }
 
-
   // -----------------------------
   // Invoice Stars
   // -----------------------------
   async handleBuyCoins(ctx: Context, packId: string) {
-    console.log('💳 Покупка:', packId);
-
     const packs = {
-      coins_500: {
-        starsPrice: 100,
-        coins: 500,
-        title: '500 монет',
-        description: 'Пакет монет для игры',
-      },
-      coins_1000: {
-        starsPrice: 180,
-        coins: 1000,
-        title: '1000 монет',
-        description: 'Пакет монет для игры',
-      },
-      coins_2500: {
-        starsPrice: 400,
-        coins: 2500,
-        title: '2500 монет',
-        description: 'Большой пакет монет',
-      },
+      coins_500: { starsPrice: 100, coins: 500 },
+      coins_1000: { starsPrice: 180, coins: 1000 },
+      coins_2500: { starsPrice: 400, coins: 2500 },
     };
 
     const pack = packs[packId];
-    if (!pack) return ctx.reply('Неизвестный пакет ❌');
+    if (!pack) return ctx.reply('Неизвестный пакет');
 
-    await ctx.replyWithInvoice({
-      title: pack.title,
-      description: pack.description,
+    // создаём invoice link
+    const link = await ctx.telegram.createInvoiceLink({
+      title: `Покупка ${pack.coins} монет`,
+      description: `Пополнение баланса на ${pack.coins} монет`,
       payload: `buy_${packId}`,
-      provider_token: '', // Stars → пусто
+      provider_token: '',
       currency: 'XTR',
-      prices: [{ label: pack.title, amount: pack.starsPrice }],
+      prices: [{ label: `${pack.coins} монет`, amount: pack.starsPrice }],
     });
+
+    // отправляем в WebApp
+    await ctx.reply(`{"invoiceLink":"${link}"}`);
   }
 
   // -----------------------------
