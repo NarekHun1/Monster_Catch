@@ -2,15 +2,15 @@ import { Ctx, Start, Update, On } from 'nestjs-telegraf';
 import { Context } from 'telegraf';
 import { UserService } from '../user/user.service';
 import { ConfigService } from '@nestjs/config';
+import { PaymentService } from '../../payments /payment.service';
 
 @Update()
 export class TelegramUpdate {
   constructor(
     private readonly userService: UserService,
+    private readonly paymentService: PaymentService,
     private readonly config: ConfigService,
-  ) {
-    console.log('TelegramUpdate initialized');
-  }
+  ) {}
 
   // ────────────────────────────────────────────────
   // 1️⃣ START — открытие WebApp
@@ -176,7 +176,14 @@ export class TelegramUpdate {
       return ctx.reply('Ошибка: пользователь не найден ❌');
     }
 
-    await this.userService.addCoins(user.id, pack.coins);
+    // 🔥 2. Сохраняем оплату в БД
+    await this.paymentService.registerPayment({
+      telegramPaymentChargeId: payment.telegram_payment_charge_id,
+      starsAmount: payment.total_amount, // Stars в XTR
+      coinsAmount: pack.coins,
+      payload: payload,
+      userTelegramId: telegramId,
+    });
 
     await ctx.reply(
       `🎉 Покупка успешна!\nТебе начислено: +${pack.coins} монет 🪙`,

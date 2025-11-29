@@ -12,6 +12,7 @@ import { DailyQuestsBroadcastModule } from './daily-quests/daily-quests-broadcas
 import { ScheduleModule } from '@nestjs/schedule';
 import { TournamentModule } from './tournament/tournament.module';
 import { PaymentModule } from '../payments /payments.module';
+import { PaymentService } from '../payments /payment.service';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { PaymentModule } from '../payments /payments.module';
     DailyQuestsBroadcastModule,
     TournamentModule,
     PaymentModule,
+    PaymentService,
   ],
 })
 export class AppModule {}
