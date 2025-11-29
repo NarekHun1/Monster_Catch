@@ -33,24 +33,31 @@ export class TelegramUpdate {
   // WebApp → sendData()
   // -----------------------------
   @On('message')
-  async onWebAppData(@Ctx() ctx: any) {
-    const raw = ctx?.web_app_data?.data;
+  async onWebAppMessage(@Ctx() ctx: any) {
+    const raw = ctx?.update?.message?.web_app_data?.data;
 
-    if (!raw) return; // не WebApp сообщение
+    if (!raw) {
+      console.log('❌ web_app_data отсутствует, обычное сообщение');
+      return;
+    }
 
-    console.log('RAW:', raw);
+    console.log('📩 WebApp RAW DATA:', raw);
 
     let data: any;
     try {
       data = JSON.parse(raw);
     } catch (e) {
-      return ctx.reply('Ошибка формата данных ❌');
+      console.log('❌ JSON parse error:', e);
+      return ctx.reply('Ошибка при чтении данных WebApp ❌');
     }
+
+    console.log('📦 Parsed DATA:', data);
 
     if (data.action === 'buy_coins') {
       return this.handleBuyCoins(ctx, data.packId);
     }
   }
+
 
   // -----------------------------
   // Invoice Stars
