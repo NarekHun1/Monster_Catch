@@ -1,8 +1,8 @@
 import { Ctx, Start, Update, On } from 'nestjs-telegraf';
 import { Context } from 'telegraf';
-import { ConfigService } from '@nestjs/config';
 import { UserService } from '../user/user.service';
 import { PaymentService } from '../payments/payment.service';
+import { ConfigService } from '@nestjs/config';
 
 @Update()
 export class TelegramUpdate {
@@ -13,7 +13,7 @@ export class TelegramUpdate {
   ) {}
 
   // ───────────────────────────────
-  // 1) START → открыть WebApp
+  // 1) START: открыть WebApp
   // ───────────────────────────────
   @Start()
   async onStart(@Ctx() ctx: Context) {
@@ -22,35 +22,51 @@ export class TelegramUpdate {
 
     await ctx.reply('Открыть игру 👇', {
       reply_markup: {
-        inline_keyboard: [[{ text: '🎮 Играть', web_app: { url } }]],
+        inline_keyboard: [
+          [
+            {
+              text: '🎮 Играть',
+              web_app: { url },
+            },
+          ],
+        ],
       },
     });
   }
 
   // ───────────────────────────────
-  // 2) WebApp sendData()
+  // 2) WebAppQuery → покупка монет
   // ───────────────────────────────
-  @On('message')
-  async onWebAppMessage(@Ctx() ctx: any) {
-    const raw = ctx?.update?.message?.web_app_data?.data;
-    if (!raw) return;
+  @On('web_app_data')
+  async onWebAppQuery(@Ctx() ctx: any) {
+    const queryId = ctx.update?.message?.web_app_data?.query_id;
+    const raw = ctx.update?.message?.web_app_data?.data;
 
-    let data;
+    if (!queryId || !raw) return;
+
+    let data: any;
     try {
       data = JSON.parse(raw);
-    } catch {
-      return ctx.reply('Ошибка формата WebApp данных');
+    } catch (e) {
+      return ctx.answerWebAppQuery({
+        type: 'article',
+        id: queryId,
+        title: 'Ошибка',
+        input_message_content: {
+          message_text: 'Ошибка JSON',
+        },
+      });
     }
 
     if (data.action === 'buy_coins') {
-      return this.handleBuyCoins(ctx, data.packId);
+      return this.processBuyCoins(ctx, queryId, data.packId);
     }
   }
 
   // ───────────────────────────────
-  // 3) создание invoice link
+  // 3) Создание invoice
   // ───────────────────────────────
-  async handleBuyCoins(ctx: any, packId: string) {
+  async processBuyCoins(ctx: any, queryId: string, packId: string) {
     const packs = {
       coins_500: { starsPrice: 100, coins: 500 },
       coins_1000: { starsPrice: 180, coins: 1000 },
@@ -60,8 +76,7 @@ export class TelegramUpdate {
     const pack = packs[packId];
     if (!pack) return;
 
-    // создаём invoice link
-    const invoiceUrl = await ctx.telegram.createInvoiceLink({
+    const link = await ctx.telegram.createInvoiceLink({
       title: `${pack.coins} монет`,
       description: `Покупка ${pack.coins} монет`,
       payload: `buy_${packId}`,
@@ -70,51 +85,48 @@ export class TelegramUpdate {
       prices: [{ label: 'Монеты', amount: pack.starsPrice }],
     });
 
-    // 🔥 самое главное — отправляем ОБРАТНО в WebApp
-    await ctx.webApp.sendData(
-      JSON.stringify({
-        type: 'invoice',
-        link: invoiceUrl,
-      }),
-    );
+    // 🔥 ВОТ ЭТО И ЕСТЬ ГЛАВНЫЙ МОМЕНТ:
+    // Mini App получает ответ БЕЗ выхода в чат
+    await ctx.answerWebAppQuery({
+      type: 'article',
+      id: queryId,
+      title: 'invoice',
+      input_message_content: {
+        message_text: JSON.stringify({
+          type: 'invoice',
+          link,
+        }),
+      },
+    });
   }
 
   // ───────────────────────────────
-  // 4) pre_checkout_query
-  // ───────────────────────────────
-  @On('pre_checkout_query')
-  async onPreCheckout(@Ctx() ctx: any) {
-    await ctx.answerPreCheckoutQuery(true);
-  }
-
-  // ───────────────────────────────
-  // 5) Успешная оплата
+  // 4) Успешная оплата
   // ───────────────────────────────
   @On('successful_payment')
   async onSuccess(@Ctx() ctx: any) {
-    const payment = ctx.message.successful_payment;
-    const telegramId = String(ctx.from.id);
+    const p = ctx.message.successful_payment;
 
-    const packId = payment.invoice_payload.replace('buy_', '');
-
-    const packs = {
+    const packId = p.invoice_payload.replace('buy_', '');
+    const coins = {
       coins_500: 500,
       coins_1000: 1000,
       coins_2500: 2500,
-    };
+    }[packId];
 
-    const coins = packs[packId];
-    if (!coins) return ctx.reply('Ошибка товара ❌');
+    if (!coins) return;
 
-    // записываем оплату
+    const user = await this.users.findByTelegramId(String(ctx.from.id));
+    if (!user) return;
+
     await this.payments.registerPayment({
-      telegramPaymentChargeId: payment.telegram_payment_charge_id,
-      starsAmount: payment.total_amount,
+      telegramPaymentChargeId: p.telegram_payment_charge_id,
+      starsAmount: p.total_amount,
       coinsAmount: coins,
-      userTelegramId: telegramId,
-      payload: payment.invoice_payload,
+      userTelegramId: String(ctx.from.id),
+      payload: p.invoice_payload,
     });
 
-    await ctx.reply(`🎉 Успешно! +${coins} монет 🪙`);
+    await ctx.reply(`🎉 Покупка успешна! +${coins} монет`);
   }
 }
