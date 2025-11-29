@@ -18,8 +18,7 @@ export class TelegramUpdate {
   @Start()
   async onStart(@Ctx() ctx: Context) {
     const url =
-      this.config.get('WEBAPP_URL') ||
-      'https://monster-catch-front.vercel.app';
+      this.config.get('WEBAPP_URL') || 'https://monster-catch-front.vercel.app';
 
     await ctx.reply('Открыть игру 👇', {
       reply_markup: {
@@ -51,7 +50,7 @@ export class TelegramUpdate {
   // ───────────────────────────────
   // 3) создание invoice link
   // ───────────────────────────────
-  async handleBuyCoins(ctx: Context, packId: string) {
+  async handleBuyCoins(ctx: any, packId: string) {
     const packs = {
       coins_500: { starsPrice: 100, coins: 500 },
       coins_1000: { starsPrice: 180, coins: 1000 },
@@ -59,21 +58,24 @@ export class TelegramUpdate {
     };
 
     const pack = packs[packId];
-    if (!pack) return ctx.reply('Неизвестный пакет ❌');
+    if (!pack) return;
 
-    // Создаём invoice link
-    const link = await ctx.telegram.createInvoiceLink({
+    // создаём invoice link
+    const invoiceUrl = await ctx.telegram.createInvoiceLink({
       title: `${pack.coins} монет`,
       description: `Покупка ${pack.coins} монет`,
       payload: `buy_${packId}`,
       provider_token: '',
       currency: 'XTR',
-      prices: [{ label: `${pack.coins} монет`, amount: pack.starsPrice }],
+      prices: [{ label: 'Монеты', amount: pack.starsPrice }],
     });
 
-    // Отправляем WebApp-данные скрыто (WebApp увидит, чат — нет)
-    await ctx.replyWithHTML(
-      `<tg-spoiler>{"type":"invoice","link":"${link}"}</tg-spoiler>`,
+    // 🔥 самое главное — отправляем ОБРАТНО в WebApp
+    await ctx.webApp.sendData(
+      JSON.stringify({
+        type: 'invoice',
+        link: invoiceUrl,
+      }),
     );
   }
 
