@@ -11,6 +11,7 @@ import { DailyQuestsBroadcastModule } from './daily-quests/daily-quests-broadcas
 import { ScheduleModule } from '@nestjs/schedule';
 import { TournamentModule } from './tournament/tournament.module';
 import { PaymentModule } from './payments/payments.module';
+import { NotificationModule } from './notification/notification.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -25,6 +26,7 @@ import { PaymentModule } from './payments/payments.module';
     DailyQuestsBroadcastModule,
     TournamentModule,
     PaymentModule,
+    NotificationModule,
   ],
 })
 export class AppModule {}

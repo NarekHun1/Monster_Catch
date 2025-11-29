@@ -3,13 +3,14 @@ import { Module } from '@nestjs/common';
 import { DailyQuestsBroadcastService } from './daily-quests-broadcast.service';
 import { DailyQuestsBroadcastController } from './daily-quests-broadcast.controller';
 import { PrismaModule } from '../prisma/prisma.module';
-import { NotificationService } from '../notification/notification.service';
 import { TelegrafModule } from 'nestjs-telegraf';
 import { DailyQuestCron } from './daily-quest.cron';
 import { PrismaService } from '../prisma/prisma.service';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
-  imports: [PrismaModule, TelegrafModule],
+  imports: [PrismaModule, TelegrafModule, NotificationModule],
   providers: [
     DailyQuestsBroadcastService,
     NotificationService,

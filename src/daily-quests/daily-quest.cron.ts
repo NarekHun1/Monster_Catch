@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { NotificationService } from '../../src/notification/notification.service';
+import { NotificationService } from '../notification/notification.service';
 
 @Injectable()
 export class DailyQuestCron {
