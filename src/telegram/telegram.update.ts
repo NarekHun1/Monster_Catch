@@ -40,8 +40,6 @@ export class TelegramUpdate {
   // ───────────────────────────────
   @On('web_app_query' as any)
   async onWebAppQuery(@Ctx() ctx: any) {
-    console.log('🔥 web_app_query:', ctx.update);
-
     const query = ctx.update?.web_app_query;
     if (!query) return;
 
@@ -55,17 +53,18 @@ export class TelegramUpdate {
       return ctx.answerWebAppQuery({
         type: 'article',
         id: queryId,
-        title: 'Ошибка JSON',
+        title: "Ошибка JSON",
         input_message_content: {
-          message_text: '❌ Ошибка: не смог прочитать данные',
+          message_text: "❌ Ошибка: некорректные данные",
         },
       });
     }
 
-    if (data.action === 'buy_coins') {
+    if (data.action === "buy_coins") {
       return this.processBuyCoins(ctx, queryId, data.packId);
     }
   }
+
 
   // ───────────────────────────────
   // 3️⃣ Создание invoice → вернёт в Mini App
