@@ -12,9 +12,9 @@ export class TelegramUpdate {
     private readonly config: ConfigService,
   ) {}
 
-  // ───────────────────────────────
-  // 1) START: открыть WebApp
-  // ───────────────────────────────
+  // ---------------------------------------------
+  // 1) START — запуск мини-игры
+  // ---------------------------------------------
   @Start()
   async onStart(@Ctx() ctx: Context) {
     const url =
@@ -34,13 +34,17 @@ export class TelegramUpdate {
     });
   }
 
-  // ───────────────────────────────
-  // 2) WebAppQuery → покупка монет
-  // ───────────────────────────────
+  // ---------------------------------------------
+  // 2) WebAppQuery — данные из мини-игры
+  // ---------------------------------------------
   @On('web_app_data')
   async onWebAppQuery(@Ctx() ctx: any) {
-    const queryId = ctx.update?.message?.web_app_data?.query_id;
-    const raw = ctx.update?.message?.web_app_data?.data;
+    const msg = ctx.update?.message;
+
+    if (!msg?.web_app_data) return;
+
+    const queryId = msg.web_app_data.query_id;
+    const raw = msg.web_app_data.data;
 
     if (!queryId || !raw) return;
 
@@ -53,7 +57,7 @@ export class TelegramUpdate {
         id: queryId,
         title: 'Ошибка',
         input_message_content: {
-          message_text: 'Ошибка JSON',
+          message_text: '❌ Ошибка JSON',
         },
       });
     }
@@ -63,9 +67,9 @@ export class TelegramUpdate {
     }
   }
 
-  // ───────────────────────────────
-  // 3) Создание invoice
-  // ───────────────────────────────
+  // ---------------------------------------------
+  // 3) Создание invoice для Stars
+  // ---------------------------------------------
   async processBuyCoins(ctx: any, queryId: string, packId: string) {
     const packs = {
       coins_500: { starsPrice: 100, coins: 500 },
@@ -76,17 +80,17 @@ export class TelegramUpdate {
     const pack = packs[packId];
     if (!pack) return;
 
+    // ссылка на оплату Stars
     const link = await ctx.telegram.createInvoiceLink({
       title: `${pack.coins} монет`,
       description: `Покупка ${pack.coins} монет`,
       payload: `buy_${packId}`,
-      provider_token: '',
+      provider_token: '', // Stars → пусто
       currency: 'XTR',
       prices: [{ label: 'Монеты', amount: pack.starsPrice }],
     });
 
-    // 🔥 ВОТ ЭТО И ЕСТЬ ГЛАВНЫЙ МОМЕНТ:
-    // Mini App получает ответ БЕЗ выхода в чат
+    // Главный момент: отправка ответа прямо в WebApp
     await ctx.answerWebAppQuery({
       type: 'article',
       id: queryId,
@@ -100,33 +104,39 @@ export class TelegramUpdate {
     });
   }
 
-  // ───────────────────────────────
-  // 4) Успешная оплата
-  // ───────────────────────────────
+  // ---------------------------------------------
+  // 4) Успешный платёж Stars
+  // ---------------------------------------------
   @On('successful_payment')
   async onSuccess(@Ctx() ctx: any) {
-    const p = ctx.message.successful_payment;
+    const pay = ctx.message.successful_payment;
+    const payload = pay.invoice_payload;
 
-    const packId = p.invoice_payload.replace('buy_', '');
-    const coins = {
+    const packId = payload.replace('buy_', '');
+
+    const coinsTable: any = {
       coins_500: 500,
       coins_1000: 1000,
       coins_2500: 2500,
-    }[packId];
+    };
 
+    const coins = coinsTable[packId];
     if (!coins) return;
 
+    // ищем пользователя
     const user = await this.users.findByTelegramId(String(ctx.from.id));
     if (!user) return;
 
+    // сохраняем платёж
     await this.payments.registerPayment({
-      telegramPaymentChargeId: p.telegram_payment_charge_id,
-      starsAmount: p.total_amount,
+      telegramPaymentChargeId: pay.telegram_payment_charge_id,
+      starsAmount: pay.total_amount,
       coinsAmount: coins,
       userTelegramId: String(ctx.from.id),
-      payload: p.invoice_payload,
+      payload,
     });
 
-    await ctx.reply(`🎉 Покупка успешна! +${coins} монет`);
+    // сообщение в чат (не WebApp)
+    await ctx.reply(`🎉 Покупка успешна! Тебе начислено +${coins} монет 🪙`);
   }
 }
