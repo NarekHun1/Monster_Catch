@@ -4,11 +4,12 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TelegramUpdate } from './telegram.update';
 import { UserModule } from '../user/user.module';
 import { TelegramWebappController } from './telegram-webapp.controller';
+import { PaymentModule } from '../../payments /payments.module';
 
 @Module({
   imports: [
     UserModule,
-    // Если ConfigModule не глобальный – нужно импортировать его сюда
+    PaymentModule,
     ConfigModule,
     TelegrafModule.forRootAsync({
       inject: [ConfigService],
