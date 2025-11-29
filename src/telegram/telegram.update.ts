@@ -2,7 +2,7 @@ import { Ctx, Start, Update, On } from 'nestjs-telegraf';
 import { Context } from 'telegraf';
 import { UserService } from '../user/user.service';
 import { ConfigService } from '@nestjs/config';
-import { PaymentService } from '../payments /payment.service';
+import { PaymentService } from '../payments/payment.service';
 
 @Update()
 export class TelegramUpdate {
