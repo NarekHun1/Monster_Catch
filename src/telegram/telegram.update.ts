@@ -12,13 +12,14 @@ export class TelegramUpdate {
     private readonly config: ConfigService,
   ) {}
 
-  // -----------------------------
-  // START → открыть WebApp
-  // -----------------------------
+  // ───────────────────────────────
+  // 1) START → открыть WebApp
+  // ───────────────────────────────
   @Start()
   async onStart(@Ctx() ctx: Context) {
     const url =
-      this.config.get('WEBAPP_URL') || 'https://monster-catch-front.vercel.app';
+      this.config.get('WEBAPP_URL') ||
+      'https://monster-catch-front.vercel.app';
 
     await ctx.reply('Открыть игру 👇', {
       reply_markup: {
@@ -27,38 +28,29 @@ export class TelegramUpdate {
     });
   }
 
-  // -----------------------------
-  // WebApp → sendData()
-  // -----------------------------
+  // ───────────────────────────────
+  // 2) WebApp sendData()
+  // ───────────────────────────────
   @On('message')
   async onWebAppMessage(@Ctx() ctx: any) {
     const raw = ctx?.update?.message?.web_app_data?.data;
+    if (!raw) return;
 
-    if (!raw) {
-      console.log('❌ web_app_data отсутствует, обычное сообщение');
-      return;
-    }
-
-    console.log('📩 WebApp RAW DATA:', raw);
-
-    let data: any;
+    let data;
     try {
       data = JSON.parse(raw);
-    } catch (e) {
-      console.log('❌ JSON parse error:', e);
-      return ctx.reply('Ошибка при чтении данных WebApp ❌');
+    } catch {
+      return ctx.reply('Ошибка формата WebApp данных');
     }
-
-    console.log('📦 Parsed DATA:', data);
 
     if (data.action === 'buy_coins') {
       return this.handleBuyCoins(ctx, data.packId);
     }
   }
 
-  // -----------------------------
-  // Invoice Stars
-  // -----------------------------
+  // ───────────────────────────────
+  // 3) создание invoice link
+  // ───────────────────────────────
   async handleBuyCoins(ctx: Context, packId: string) {
     const packs = {
       coins_500: { starsPrice: 100, coins: 500 },
@@ -67,39 +59,41 @@ export class TelegramUpdate {
     };
 
     const pack = packs[packId];
-    if (!pack) return ctx.reply('Неизвестный пакет');
+    if (!pack) return ctx.reply('Неизвестный пакет ❌');
 
-    // создаём invoice link
+    // Создаём invoice link
     const link = await ctx.telegram.createInvoiceLink({
-      title: `Покупка ${pack.coins} монет`,
-      description: `Пополнение баланса на ${pack.coins} монет`,
+      title: `${pack.coins} монет`,
+      description: `Покупка ${pack.coins} монет`,
       payload: `buy_${packId}`,
       provider_token: '',
       currency: 'XTR',
       prices: [{ label: `${pack.coins} монет`, amount: pack.starsPrice }],
     });
 
-    // отправляем в WebApp
-    await ctx.reply(`{"invoiceLink":"${link}"}`);
+    // Отправляем WebApp-данные скрыто (WebApp увидит, чат — нет)
+    await ctx.replyWithHTML(
+      `<tg-spoiler>{"type":"invoice","link":"${link}"}</tg-spoiler>`,
+    );
   }
 
-  // -----------------------------
-  // Pre-checkout
-  // -----------------------------
+  // ───────────────────────────────
+  // 4) pre_checkout_query
+  // ───────────────────────────────
   @On('pre_checkout_query')
   async onPreCheckout(@Ctx() ctx: any) {
     await ctx.answerPreCheckoutQuery(true);
   }
 
-  // -----------------------------
-  // Успешная оплата
-  // -----------------------------
+  // ───────────────────────────────
+  // 5) Успешная оплата
+  // ───────────────────────────────
   @On('successful_payment')
   async onSuccess(@Ctx() ctx: any) {
-    const p = ctx.message.successful_payment;
+    const payment = ctx.message.successful_payment;
     const telegramId = String(ctx.from.id);
 
-    const packId = p.invoice_payload.replace('buy_', '');
+    const packId = payment.invoice_payload.replace('buy_', '');
 
     const packs = {
       coins_500: 500,
@@ -110,14 +104,15 @@ export class TelegramUpdate {
     const coins = packs[packId];
     if (!coins) return ctx.reply('Ошибка товара ❌');
 
+    // записываем оплату
     await this.payments.registerPayment({
-      telegramPaymentChargeId: p.telegram_payment_charge_id,
-      starsAmount: p.total_amount,
+      telegramPaymentChargeId: payment.telegram_payment_charge_id,
+      starsAmount: payment.total_amount,
       coinsAmount: coins,
       userTelegramId: telegramId,
-      payload: p.invoice_payload,
+      payload: payment.invoice_payload,
     });
 
-    await ctx.reply(`🎉 Успешно!\nНачислено +${coins} монет 🪙`);
+    await ctx.reply(`🎉 Успешно! +${coins} монет 🪙`);
   }
 }
