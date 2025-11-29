@@ -2,7 +2,7 @@ import { Ctx, Start, Update, On } from 'nestjs-telegraf';
 import { Context } from 'telegraf';
 import { UserService } from '../user/user.service';
 import { ConfigService } from '@nestjs/config';
-import { PaymentService } from '../../payments /payment.service';
+import { PaymentService } from '../payments /payment.service';
 
 @Update()
 export class TelegramUpdate {
@@ -42,7 +42,6 @@ export class TelegramUpdate {
       }
     }
 
-    // WebApp URL из .env
     const baseUrl =
       this.config.get<string>('WEBAPP_URL') ||
       'https://monster-catch-front.vercel.app';
@@ -53,7 +52,6 @@ export class TelegramUpdate {
 
     const refLink = `https://t.me/${botUsername}?start=ref_${from.id}`;
 
-    // Кнопка "Играть"
     await ctx.reply('Нажми кнопку, чтобы открыть игру 👇', {
       reply_markup: {
         keyboard: [
@@ -74,24 +72,32 @@ export class TelegramUpdate {
   }
 
   // ────────────────────────────────────────────────
-  // 2️⃣ WebApp sendData()
+  // 2️⃣ WebApp sendData() — здесь БЫЛА ОШИБКА
   // ────────────────────────────────────────────────
   @On('message')
   async onWebAppMessage(@Ctx() ctx: any) {
     const raw = ctx?.webAppData?.data;
     if (!raw) return;
 
-    console.log('📩 WebApp DATA:', raw);
+    console.log('📩 WebApp RAW DATA:', raw);
+
+    // Проверка: если приходит "[object Object]" → WebApp отправил не JSON
+    if (raw === '[object Object]') {
+      console.log('❌ WebApp отправил неправильный формат данных');
+      return ctx.reply('Ошибка: WebApp отправил неправильные данные ❌');
+    }
 
     let data: any;
     try {
       data = JSON.parse(raw);
     } catch (e) {
       console.log('❌ JSON parse error:', e);
-      return;
+      return ctx.reply('Ошибка при чтении данных WebApp ❌');
     }
 
-    // Купить монеты
+    console.log('📦 Parsed DATA:', data);
+
+    // Покупка монет
     if (data.action === 'buy_coins') {
       return this.handleBuyCoins(ctx, data.packId);
     }
@@ -125,7 +131,7 @@ export class TelegramUpdate {
       title: pack.title,
       description: pack.description,
       payload: `buy_coins_${packId}`,
-      provider_token: '', // ⭐ Для Stars ВСЕГДА пустой
+      provider_token: '', // Stars → всегда пустой
       currency: 'XTR',
       prices: [
         {
@@ -139,7 +145,7 @@ export class TelegramUpdate {
   }
 
   // ────────────────────────────────────────────────
-  // 4️⃣ Подтверждение оплаты Stars
+  // 4️⃣ pre_checkout_query
   // ────────────────────────────────────────────────
   @On('pre_checkout_query')
   async onPreCheckout(@Ctx() ctx: any) {
@@ -156,7 +162,7 @@ export class TelegramUpdate {
 
     console.log('🎉 SUCCESSFUL PAYMENT:', payment);
 
-    const payload = payment.invoice_payload; // buy_coins_coins_500
+    const payload = payment.invoice_payload;
     const packId = payload.replace('buy_coins_', '');
 
     const packs = {
@@ -176,12 +182,12 @@ export class TelegramUpdate {
       return ctx.reply('Ошибка: пользователь не найден ❌');
     }
 
-    // 🔥 2. Сохраняем оплату в БД
+    // Сохранить платёж
     await this.paymentService.registerPayment({
       telegramPaymentChargeId: payment.telegram_payment_charge_id,
-      starsAmount: payment.total_amount, // Stars в XTR
+      starsAmount: payment.total_amount,
       coinsAmount: pack.coins,
-      payload: payload,
+      payload,
       userTelegramId: telegramId,
     });
 

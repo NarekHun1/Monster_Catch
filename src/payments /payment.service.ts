@@ -4,8 +4,8 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { PrismaService } from '../src/prisma/prisma.service';
-import { UserService } from '../src/user/user.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { UserService } from '../user/user.service';
 
 @Injectable()
 export class PaymentService {
