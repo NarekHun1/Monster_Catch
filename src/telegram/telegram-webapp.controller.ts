@@ -57,26 +57,25 @@ export class TelegramWebappController {
   }
 
   private checkTelegramInitData(initData: string, botToken: string): boolean {
-    const secretKey = crypto
-      .createHmac('sha256', 'WebAppData')
-      .update(botToken)
-      .digest();
-
     const data = new URLSearchParams(initData);
+
     const hash = data.get('hash');
     if (!hash) return false;
+
     data.delete('hash');
 
-    const dataCheckString = Array.from(data.keys())
-      .sort()
-      .map((key) => `${key}=${data.get(key)}`)
+    const sorted = [...data.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v}`)
       .join('\n');
 
-    const hmac = crypto
-      .createHmac('sha256', secretKey)
-      .update(dataCheckString)
+    const secret = crypto.createHash('sha256').update(botToken).digest();
+
+    const check = crypto
+      .createHmac('sha256', secret)
+      .update(sorted)
       .digest('hex');
 
-    return hmac === hash;
+    return check === hash;
   }
 }

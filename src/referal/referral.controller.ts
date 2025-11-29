@@ -6,7 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ReferralService } from './referral.service';
-import { AuthService } from '../src/auth/auth.service';
+import { AuthService } from '../auth/auth.service';
 
 @Controller('referral') // => будет /referral/link
 export class ReferralController {
