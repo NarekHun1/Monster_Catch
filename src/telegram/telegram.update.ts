@@ -54,7 +54,7 @@ export class TelegramUpdate {
 
     await ctx.reply('Нажми кнопку, чтобы открыть игру 👇', {
       reply_markup: {
-        keyboard: [
+        inline_keyboard: [
           [
             {
               text: '🎮 Играть',
@@ -62,7 +62,6 @@ export class TelegramUpdate {
             },
           ],
         ],
-        resize_keyboard: true,
       },
     });
 
