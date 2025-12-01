@@ -90,25 +90,30 @@ export class TelegramUpdate {
       });
     }
 
-    // ⭐ Создаём ссылку (ТО ЭТО У ТЕБЯ РАБОТАЛО)
-    const invoiceUrl = await ctx.telegram.createInvoiceLink({
+    // ⭐ создаём invoice-link
+    const invoiceLink = await ctx.telegram.createInvoiceLink({
       title: `${pack.coins} монет`,
       description: `Покупка ${pack.coins} монет`,
       payload: `buy_${packId}`,
       provider_token: '',
       currency: 'XTR',
-      prices: [{ label: 'Монеты', amount: pack.starsPrice }],
+      prices: [
+        {
+          label: 'Монеты',
+          amount: pack.starsPrice,
+        },
+      ],
     });
 
-    // Отправляем назад ВОТ ТАК — ЭТО У ТЕБЯ ТОЧНО РАБОТАЛО
+    // ⭐ возвращаем article
     return ctx.answerWebAppQuery({
       type: 'article',
       id: queryId,
-      title: `Покупка монет`,
+      title: 'Покупка монет',
       input_message_content: {
         message_text: JSON.stringify({
           type: 'invoice',
-          link: invoiceUrl,
+          link: invoiceLink,
         }),
       },
     });
