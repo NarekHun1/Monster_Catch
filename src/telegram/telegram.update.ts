@@ -89,7 +89,6 @@ export class TelegramUpdate {
         },
       });
     }
-
     return ctx.answerWebAppQuery({
       type: 'invoice',
       id: queryId,
@@ -98,7 +97,7 @@ export class TelegramUpdate {
       description: `Покупка ${pack.coins} монет`,
 
       payload: `buy_${packId}`,
-      provider_token: '', // Stars
+      provider_token: '',
 
       currency: 'XTR',
       prices: [{ label: 'Монеты', amount: pack.starsPrice }],
