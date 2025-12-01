@@ -90,33 +90,18 @@ export class TelegramUpdate {
       });
     }
 
-    // ❗ ВАЖНО — Stars → provider_token = '' + pay:true
-    const price = [{ label: 'Coins', amount: pack.starsPrice }];
-
     return ctx.answerWebAppQuery({
-      type: 'article',
+      type: 'invoice',
       id: queryId,
-      title: `Покупка ${pack.coins} монет`,
-      input_message_content: {
-        message_text: `🪙 Покупка ${pack.coins} монет`,
-      },
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: `Оплатить ${pack.starsPrice}⭐`,
-              pay: true,
-            },
-          ],
-        ],
-      },
 
-      // invoice-specific:
+      title: `${pack.coins} монет`,
       description: `Покупка ${pack.coins} монет`,
-      currency: 'XTR',
-      prices: price,
-      provider_token: '',
+
       payload: `buy_${packId}`,
+      provider_token: '', // Stars
+
+      currency: 'XTR',
+      prices: [{ label: 'Монеты', amount: pack.starsPrice }],
     });
   }
 
