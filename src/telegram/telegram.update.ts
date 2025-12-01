@@ -89,18 +89,28 @@ export class TelegramUpdate {
         },
       });
     }
-    return ctx.answerWebAppQuery({
-      type: 'invoice',
-      id: queryId,
 
+    // ⭐ Создаём ссылку (ТО ЭТО У ТЕБЯ РАБОТАЛО)
+    const invoiceUrl = await ctx.telegram.createInvoiceLink({
       title: `${pack.coins} монет`,
       description: `Покупка ${pack.coins} монет`,
-
       payload: `buy_${packId}`,
       provider_token: '',
-
       currency: 'XTR',
       prices: [{ label: 'Монеты', amount: pack.starsPrice }],
+    });
+
+    // Отправляем назад ВОТ ТАК — ЭТО У ТЕБЯ ТОЧНО РАБОТАЛО
+    return ctx.answerWebAppQuery({
+      type: 'article',
+      id: queryId,
+      title: `Покупка монет`,
+      input_message_content: {
+        message_text: JSON.stringify({
+          type: 'invoice',
+          link: invoiceUrl,
+        }),
+      },
     });
   }
 
