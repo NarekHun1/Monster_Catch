@@ -42,7 +42,7 @@ export class TelegramUpdate {
   async onWebAppQuery(@Ctx() ctx: any) {
     const query = ctx.update?.web_app_query;
 
-    console.log("🔥 web_app_query:", query);
+    console.log('🔥 web_app_query:', query);
 
     if (!query) return;
 
@@ -69,7 +69,7 @@ export class TelegramUpdate {
   }
 
   // ------------------------------------------
-  // 3) Создание invoice → Mini App откроет оплату
+  // Покупка монет из WebApp → создаём invoice
   // ------------------------------------------
   async processBuyCoins(ctx: any, queryId: string, packId: string) {
     const packs = {
@@ -90,27 +90,33 @@ export class TelegramUpdate {
       });
     }
 
-    // Создаём invoice link
-    const invoice = await ctx.telegram.createInvoiceLink({
-      title: `${pack.coins} монет`,
-      description: `Покупка ${pack.coins} монет`,
-      payload: `buy_${packId}`,
-      provider_token: '', // Stars → пустой
-      currency: 'XTR',
-      prices: [{ label: 'Монеты', amount: pack.starsPrice }],
-    });
+    // ❗ ВАЖНО — Stars → provider_token = '' + pay:true
+    const price = [{ label: 'Coins', amount: pack.starsPrice }];
 
-    // Возвращаем обратно в Mini App
     return ctx.answerWebAppQuery({
       type: 'article',
       id: queryId,
-      title: 'Покупка монет',
+      title: `Покупка ${pack.coins} монет`,
       input_message_content: {
-        message_text: JSON.stringify({
-          type: 'invoice',
-          link: invoice,
-        }),
+        message_text: `🪙 Покупка ${pack.coins} монет`,
       },
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: `Оплатить ${pack.starsPrice}⭐`,
+              pay: true,
+            },
+          ],
+        ],
+      },
+
+      // invoice-specific:
+      description: `Покупка ${pack.coins} монет`,
+      currency: 'XTR',
+      prices: price,
+      provider_token: '',
+      payload: `buy_${packId}`,
     });
   }
 
