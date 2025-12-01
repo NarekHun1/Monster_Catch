@@ -25,31 +25,25 @@ export class TelegramUpdate {
   // ------------------------------------------------------
   // WebApp → sendData() приходит как ctx.update.web_app_query
   // ------------------------------------------------------
-  @On('web_app_query')
-  async onWebAppQuery(@Ctx() ctx: any) {
-    const query = ctx.update.web_app_query;
-    if (!query) return;
+  @On('message')
+  async onMessage(@Ctx() ctx: any) {
+    const webAppData = ctx.message?.web_app_data;
 
-    console.log("🔥 Получен web_app_query:", query);
+    if (!webAppData) return;
 
-    const queryId = query.id;
-    const raw = query.data;
+    console.log('🔥 web_app_data:', webAppData);
 
-    let data;
+    const raw = webAppData.data;
+    const queryId = webAppData.button_text; // просто идентификатор кнопки
+
+    let data: any;
     try {
       data = JSON.parse(raw);
     } catch {
-      return ctx.answerWebAppQuery({
-        type: "article",
-        id: queryId,
-        title: "Ошибка",
-        input_message_content: {
-          message_text: "❌ JSON ошибка",
-        },
-      });
+      return ctx.reply('❌ Неверные данные');
     }
 
-    if (data.action === "buy_coins") {
+    if (data.action === 'buy_coins') {
       return this.processBuyCoins(ctx, queryId, data.packId);
     }
   }
@@ -70,7 +64,7 @@ export class TelegramUpdate {
         type: 'article',
         id: queryId,
         title: 'Ошибка',
-        input_message_content: { message_text: "Неизвестный пакет" },
+        input_message_content: { message_text: 'Неизвестный пакет' },
       });
     }
 
@@ -78,19 +72,19 @@ export class TelegramUpdate {
       title: `${pack.coins} монет`,
       description: `Покупка ${pack.coins} монет`,
       payload: `buy_${packId}`,
-      provider_token: "",
-      currency: "XTR",
-      prices: [{ label: "Монеты", amount: pack.starsPrice }],
+      provider_token: '',
+      currency: 'XTR',
+      prices: [{ label: 'Монеты', amount: pack.starsPrice }],
     });
 
     // 👉 Отправляем ответ в Mini App (НЕ в чат)
     return ctx.answerWebAppQuery({
-      type: "article",
+      type: 'article',
       id: queryId,
-      title: "invoice",
+      title: 'invoice',
       input_message_content: {
         message_text: JSON.stringify({
-          type: "invoice",
+          type: 'invoice',
           link,
         }),
       },
@@ -102,7 +96,7 @@ export class TelegramUpdate {
     const p = ctx.message.successful_payment;
     const id = String(ctx.from.id);
 
-    const packId = p.invoice_payload.replace("buy_", "");
+    const packId = p.invoice_payload.replace('buy_', '');
 
     const coinsMap = {
       coins_500: 500,
