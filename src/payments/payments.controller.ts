@@ -1,9 +1,7 @@
 // src/payment/payment.controller.ts
-import { Body, Controller, Post, BadRequestException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Post } from '@nestjs/common';
 import { PaymentService } from './payment.service';
-import { CreatePaymentDto } from './dto/create-payment.dto';
 import { ConfigService } from '@nestjs/config';
-import axios from 'axios';
 
 @Controller('payment')
 export class PaymentController {
@@ -13,7 +11,7 @@ export class PaymentController {
   ) {}
 
   @Post('confirm')
-  async confirmPayment(@Body() dto: CreatePaymentDto) {
+  async confirmPayment(@Body() dto: any) {
     const payment = await this.paymentService.registerPayment(dto);
 
     return {
@@ -22,16 +20,13 @@ export class PaymentController {
     };
   }
 
-  // 🔥 новый метод — создаёт invoice link для Stars
+  // 🔥 НОВОЕ: создаём Stars-invoice
   @Post('create-stars-invoice')
   async createStarsInvoice(@Body() body: { packId: string }) {
-    const packs: Record<
-      string,
-      { starsPrice: number; coins: number; title: string }
-    > = {
-      coins_500: { starsPrice: 100, coins: 500, title: '500 монет' },
-      coins_1000: { starsPrice: 180, coins: 1000, title: '1000 монет' },
-      coins_2500: { starsPrice: 400, coins: 2500, title: '2500 монет' },
+    const packs: Record<string, { starsPrice: number; coins: number }> = {
+      coins_500: { starsPrice: 100, coins: 500 },
+      coins_1000: { starsPrice: 180, coins: 1000 },
+      coins_2500: { starsPrice: 400, coins: 2500 },
     };
 
     const pack = packs[body.packId];
@@ -41,37 +36,41 @@ export class PaymentController {
 
     const botToken = this.config.get<string>('TELEGRAM_BOT_TOKEN');
     if (!botToken) {
-      throw new Error('No TELEGRAM_BOT_TOKEN in config');
+      throw new Error('TELEGRAM_BOT_TOKEN is not set');
     }
 
-    // ⚠️ Stars: currency = 'XTR', provider_token = ''
-    const payload = `buy_${body.packId}`;
+    const url = `https://api.telegram.org/bot${botToken}/createInvoiceLink`;
 
-    const tgUrl = `https://api.telegram.org/bot${botToken}/createInvoiceLink`;
-
-    const resp = await axios.post(tgUrl, {
-      title: pack.title,
-      description: `Покупка ${pack.coins} монет`,
-      payload,
-      provider_token: '',
-      currency: 'XTR',
-      prices: [
-        {
-          label: pack.title,
-          amount: pack.starsPrice,
-        },
-      ],
+    // если у тебя Node 18+, можно так:
+    const tgRes = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: `${pack.coins} монет`,
+        description: `Покупка ${pack.coins} монет`,
+        payload: `buy_${body.packId}`,
+        provider_token: '', // для Stars — пустая строка
+        currency: 'XTR', // валюта Stars
+        prices: [
+          {
+            label: `${pack.coins} монет`,
+            amount: pack.starsPrice, // цена в Stars
+          },
+        ],
+      }),
     });
 
-    if (!resp.data?.ok) {
-      console.error('Telegram createInvoiceLink error:', resp.data);
-      throw new Error('Cannot create invoice link');
+    const tgData = await tgRes.json();
+
+    if (!tgData.ok) {
+      console.error('Telegram createInvoiceLink error:', tgData);
+      throw new Error(
+        tgData.description || 'Telegram createInvoiceLink failed',
+      );
     }
 
-    const invoiceLink: string = resp.data.result;
-    return {
-      link: invoiceLink,
-      coins: pack.coins,
-    };
+    const invoiceLink: string = tgData.result;
+
+    return { invoiceLink };
   }
 }
