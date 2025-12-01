@@ -1,5 +1,4 @@
 import { Ctx, Start, Update, On } from 'nestjs-telegraf';
-import { Context } from 'telegraf';
 import { ConfigService } from '@nestjs/config';
 import { UserService } from '../user/user.service';
 import { PaymentService } from '../payments/payment.service';
@@ -12,13 +11,9 @@ export class TelegramUpdate {
     private readonly config: ConfigService,
   ) {}
 
-  // ─────────────────────────────
-  // START → открыть игру
-  // ─────────────────────────────
   @Start()
-  async onStart(@Ctx() ctx: Context) {
-    const url =
-      this.config.get('WEBAPP_URL') || 'https://monster-catch-front.vercel.app';
+  async onStart(@Ctx() ctx: any) {
+    const url = this.config.get('WEBAPP_URL');
 
     await ctx.reply('Открыть игру 👇', {
       reply_markup: {
@@ -27,43 +22,25 @@ export class TelegramUpdate {
     });
   }
 
-  // ─────────────────────────────
-  // ВАЖНО: WebAppQuery приходит
-  // внутри message → web_app_data
-  // ─────────────────────────────
+  // ------------------------------------------------------
+  // WebApp → sendData() приходит как ctx.update.web_app_query
+  // ------------------------------------------------------
   @On('message')
   async onMessage(@Ctx() ctx: any) {
-    const webAppQuery = ctx.update?.web_app_query;
-    const webAppData = ctx.update?.message?.web_app_data;
+    const webAppData = ctx.message?.web_app_data;
 
-    // 1) Веб-ап запрос типа sendData()
-    if (webAppQuery) {
-      return this.handleWebAppQuery(ctx, webAppQuery);
-    }
+    if (!webAppData) return;
 
-    // 2) Альтернативный способ: sendData() может прийти в message.web_app_data
-    if (webAppData?.data) {
-      return this.handleWebAppData(ctx, webAppData);
-    }
-  }
+    console.log('🔥 web_app_data:', webAppData);
 
-  // обработка web_app_query
-  private async handleWebAppQuery(ctx: any, query: any) {
-    const queryId = query.id;
-    const raw = query.data;
+    const raw = webAppData.data;
+    const queryId = webAppData.button_text; // просто идентификатор кнопки
 
-    let data;
+    let data: any;
     try {
       data = JSON.parse(raw);
     } catch {
-      return ctx.answerWebAppQuery({
-        type: 'article',
-        id: queryId,
-        title: 'Ошибка JSON',
-        input_message_content: {
-          message_text: '❌ WebApp прислал неверный JSON',
-        },
-      });
+      return ctx.reply('❌ Неверные данные');
     }
 
     if (data.action === 'buy_coins') {
@@ -71,27 +48,10 @@ export class TelegramUpdate {
     }
   }
 
-  // обработка message.web_app_data.data
-  private async handleWebAppData(ctx: any, webAppData: any) {
-    const raw = webAppData.data;
-    const messageId = String(Date.now()); // уникальный ID для ответа
-
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      return ctx.reply('❌ WebApp прислал неверные данные');
-    }
-
-    if (data.action === 'buy_coins') {
-      return this.processBuyCoins(ctx, messageId, data.packId);
-    }
-  }
-
-  // ─────────────────────────────
-  // Создание invoice
-  // ─────────────────────────────
-  private async processBuyCoins(ctx: any, queryId: string, packId: string) {
+  // ------------------------------------------------------
+  // Создание INVOICE в мини-игру
+  // ------------------------------------------------------
+  async processBuyCoins(ctx: any, queryId: string, packId: string) {
     const packs = {
       coins_500: { starsPrice: 100, coins: 500 },
       coins_1000: { starsPrice: 180, coins: 1000 },
@@ -104,7 +64,7 @@ export class TelegramUpdate {
         type: 'article',
         id: queryId,
         title: 'Ошибка',
-        input_message_content: { message_text: '❌ Неизвестный пакет' },
+        input_message_content: { message_text: 'Неизвестный пакет' },
       });
     }
 
@@ -117,42 +77,44 @@ export class TelegramUpdate {
       prices: [{ label: 'Монеты', amount: pack.starsPrice }],
     });
 
+    // 👉 Отправляем ответ в Mini App (НЕ в чат)
     return ctx.answerWebAppQuery({
       type: 'article',
       id: queryId,
-      title: 'Покупка монет',
+      title: 'invoice',
       input_message_content: {
-        message_text: JSON.stringify({ type: 'invoice', link }),
+        message_text: JSON.stringify({
+          type: 'invoice',
+          link,
+        }),
       },
     });
   }
 
-  // ─────────────────────────────
-  // Успешная оплата
-  // ─────────────────────────────
   @On('successful_payment')
   async onSuccess(@Ctx() ctx: any) {
     const p = ctx.message.successful_payment;
+    const id = String(ctx.from.id);
 
     const packId = p.invoice_payload.replace('buy_', '');
 
-    const map = {
+    const coinsMap = {
       coins_500: 500,
       coins_1000: 1000,
       coins_2500: 2500,
     };
 
-    const coins = map[packId];
+    const coins = coinsMap[packId];
     if (!coins) return;
 
     await this.payments.registerPayment({
       telegramPaymentChargeId: p.telegram_payment_charge_id,
       starsAmount: p.total_amount,
       coinsAmount: coins,
-      userTelegramId: String(ctx.from.id),
+      userTelegramId: id,
       payload: p.invoice_payload,
     });
 
-    await ctx.reply(`🎉 Успешно! +${coins} монет 🪙`);
+    await ctx.reply(`🎉 Успешно! +${coins} монет`);
   }
 }
