@@ -69,7 +69,7 @@ export class TournamentService {
       },
     });
 
-    const entryFee = 1; // 1 монетка
+    const entryFee = 50; // 50 монетка
 
     if (!tournament) {
       tournament = await this.prisma.tournament.create({
