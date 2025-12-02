@@ -95,9 +95,9 @@ export class TelegramUpdate {
     const packId = payment.invoice_payload.replace('buy_', '');
 
     const packs = {
-      coins_500: 500,
-      coins_1000: 1000,
-      coins_2500: 2500,
+      coins_500: 100,
+      coins_1000: 150,
+      coins_2500: 300,
     };
 
     const coins = packs[packId];

@@ -24,9 +24,9 @@ export class PaymentController {
   @Post('create-stars-invoice')
   async createStarsInvoice(@Body() body: { packId: string }) {
     const packs: Record<string, { starsPrice: number; coins: number }> = {
-      coins_500: { starsPrice: 100, coins: 500 },
-      coins_1000: { starsPrice: 180, coins: 1000 },
-      coins_2500: { starsPrice: 400, coins: 2500 },
+      coins_500: { starsPrice: 100, coins: 100 },
+      coins_1000: { starsPrice: 150, coins: 150 },
+      coins_2500: { starsPrice: 250, coins: 300 },
     };
 
     const pack = packs[body.packId];
