@@ -17,12 +17,12 @@ export function verifyTelegramInitData(
     return false;
   }
 
-  // hash не участвует в data_check_string
+  // hash и signature НЕ участвуют в data_check_string
   params.delete('hash');
+  params.delete('signature');
 
   const dataCheckArr: string[] = [];
 
-  // строго сортируем по ключу
   Array.from(params.keys())
     .sort()
     .forEach((key) => {
