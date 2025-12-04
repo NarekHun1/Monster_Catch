@@ -61,7 +61,7 @@ export class AuthService {
   }
   getUserIdFromToken(token: string): number {
     if (!token) {
-      throw new UnauthorizedException('Token missing');
+      throw new UnauthorizedException('TOKEN_MISSING');
     }
 
     const secret = this.config.get<string>('JWT_SECRET');
@@ -72,14 +72,16 @@ export class AuthService {
     try {
       const payload = jwt.verify(token, secret) as JwtPayload;
 
-
       if (!payload.userId) {
-        throw new UnauthorizedException('Invalid payload');
+        throw new UnauthorizedException('INVALID_PAYLOAD');
       }
 
       return payload.userId;
-    } catch {
-      throw new UnauthorizedException('Invalid token');
+    } catch (err: any) {
+      if (err.name === 'TokenExpiredError') {
+        throw new UnauthorizedException('TOKEN_EXPIRED');
+      }
+      throw new UnauthorizedException('INVALID_TOKEN');
     }
   }
 }
