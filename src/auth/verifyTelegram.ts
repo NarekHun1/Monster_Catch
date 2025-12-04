@@ -34,7 +34,14 @@ export function verifyTelegramInitData(
 
   const dataCheckString = dataCheckArr.join('\n');
 
-  const secretKey = crypto.createHash('sha256').update(botToken).digest();
+  // 🔴 БЫЛО: SHA256(botToken)
+  // const secretKey = crypto.createHash('sha256').update(botToken).digest();
+
+  // ✅ ДОЛЖНО БЫТЬ: HMAC-SHA256(botToken с ключом "WebAppData")
+  const secretKey = crypto
+    .createHmac('sha256', 'WebAppData')
+    .update(botToken)
+    .digest();
 
   const hmac = crypto
     .createHmac('sha256', secretKey)
