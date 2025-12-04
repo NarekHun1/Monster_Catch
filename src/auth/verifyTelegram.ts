@@ -4,29 +4,50 @@ export function verifyTelegramInitData(
   initData: string,
   botToken: string,
 ): boolean {
-  const urlParams = new URLSearchParams(initData);
-  const hash = urlParams.get('hash');
+  if (!initData || !botToken) {
+    console.warn('verifyTelegramInitData: no initData or botToken');
+    return false;
+  }
 
-  if (!hash) return false;
+  const params = new URLSearchParams(initData);
+  const hash = params.get('hash');
 
-  // Сортируем параметры
+  if (!hash) {
+    console.warn('verifyTelegramInitData: no hash in initData');
+    return false;
+  }
+
+  // hash не участвует в data_check_string
+  params.delete('hash');
+
   const dataCheckArr: string[] = [];
-  urlParams.forEach((value, key) => {
-    if (key !== 'hash') dataCheckArr.push(`${key}=${value}`);
-  });
 
-  dataCheckArr.sort();
+  // строго сортируем по ключу
+  Array.from(params.keys())
+    .sort()
+    .forEach((key) => {
+      const value = params.get(key);
+      if (value !== null) {
+        dataCheckArr.push(`${key}=${value}`);
+      }
+    });
 
   const dataCheckString = dataCheckArr.join('\n');
 
-  // Ключ = SHA256(token)
   const secretKey = crypto.createHash('sha256').update(botToken).digest();
 
-  // Вычисляем HMAC SHA-256
   const hmac = crypto
     .createHmac('sha256', secretKey)
     .update(dataCheckString)
     .digest('hex');
 
-  return hmac === hash;
+  console.log('--- TELEGRAM VERIFY DEBUG ---');
+  console.log('data_check_string:\n' + dataCheckString);
+  console.log('our hmac:      ', hmac);
+  console.log('telegram hash: ', hash);
+
+  const ok = hmac === hash;
+  console.log('signature OK?', ok);
+
+  return ok;
 }
