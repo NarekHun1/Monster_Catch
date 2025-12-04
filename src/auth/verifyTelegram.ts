@@ -17,9 +17,8 @@ export function verifyTelegramInitData(
     return false;
   }
 
-  // hash и signature НЕ участвуют в data_check_string
+  // ❗ УБИРАЕМ ТОЛЬКО hash, signature не трогаем
   params.delete('hash');
-  params.delete('signature');
 
   const dataCheckArr: string[] = [];
 
@@ -34,10 +33,7 @@ export function verifyTelegramInitData(
 
   const dataCheckString = dataCheckArr.join('\n');
 
-  // 🔴 БЫЛО: SHA256(botToken)
-  // const secretKey = crypto.createHash('sha256').update(botToken).digest();
-
-  // ✅ ДОЛЖНО БЫТЬ: HMAC-SHA256(botToken с ключом "WebAppData")
+  // HMAC-SHA256(botToken, key = "WebAppData")
   const secretKey = crypto
     .createHmac('sha256', 'WebAppData')
     .update(botToken)
