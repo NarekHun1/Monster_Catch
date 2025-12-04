@@ -17,12 +17,20 @@ export class TelegramUpdate {
   // ───────────────────────────────
   @Start()
   async onStart(@Ctx() ctx: Context) {
-    const url =
+    const baseUrl =
       this.config.get('WEBAPP_URL') || 'https://monster-catch-front.vercel.app';
 
     await ctx.reply('Открыть игру 👇', {
       reply_markup: {
-        inline_keyboard: [[{ text: '🎮 Играть', web_app: { url } }]],
+        keyboard: [
+          [
+            {
+              text: '🎮 Играть',
+              web_app: { url: baseUrl },
+            },
+          ],
+        ],
+        resize_keyboard: true,
       },
     });
   }
