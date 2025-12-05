@@ -29,6 +29,7 @@ model User {
   referralsSent         Referral[]              @relation("UserInviter")
   tournaments           TournamentParticipant[]
   Payment               Payment[]
+  Withdrawal            Withdrawal[]
 }
 
 model Game {
@@ -88,6 +89,33 @@ model Payment {
   user                    User     @relation(fields: [userId], references: [id])
   userId                  Int
   createdAt               DateTime @default(now())
+}
+
+model Withdrawal {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  coins     Int // сколько coins списали за этот вывод
+  amountUsd Float // во сколько USD это оценили (по твоему курсу)
+  amountTon Float? // сколько TON отправишь (если вывод в TON)
+  currency  String @default("TON") // TON/USDT и т.д.
+
+  network String // TON / TRC20 / BEP20 / ERC20 и т.п.
+  address String // адрес кошелька пользователя
+
+  status WithdrawalStatus @default(PENDING)
+  txHash String?
+
+  createdAt   DateTime  @default(now())
+  processedAt DateTime?
+}
+
+enum WithdrawalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PAID
 }
 
 enum TournamentStatus {

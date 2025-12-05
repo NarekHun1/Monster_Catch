@@ -12,6 +12,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { TournamentModule } from './tournament/tournament.module';
 import { PaymentModule } from './payments/payments.module';
 import { NotificationModule } from './notification/notification.module';
+import { WalletModule } from './wallet/wallet.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -27,6 +28,7 @@ import { NotificationModule } from './notification/notification.module';
     TournamentModule,
     PaymentModule,
     NotificationModule,
+    WalletModule,
   ],
 })
 export class AppModule {}
