@@ -8,7 +8,12 @@ export class WalletService {
   private readonly COINS_PER_USD = 50;
   private readonly USD_PER_TON = 2; // примерный курс 1 TON ≈ 2$
 
-  async requestWithdraw(userId: number, coins: number, network: string, address: string) {
+  async requestWithdraw(
+    userId: number,
+    coins: number,
+    network: string,
+    address: string,
+  ) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new BadRequestException('Пользователь не найден');
 
