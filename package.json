@@ -30,6 +30,8 @@
     "@nestjs/schedule": "^6.0.1",
     "@nestjs/serve-static": "^5.0.4",
     "@prisma/client": "^6.19.0",
+    "@ton/crypto": "^3.3.0",
+    "@ton/ton": "^16.1.0",
     "axios": "^1.13.2",
     "class-validator": "^0.14.3",
     "dotenv": "^17.2.3",
