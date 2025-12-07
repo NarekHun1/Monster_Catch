@@ -1,3 +1,5 @@
+// prisma/schema.prisma
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -8,28 +10,34 @@ datasource db {
 }
 
 model User {
-  telegramId            String                  @unique
-  username              String?
-  firstName             String?
-  lastSeenAt            DateTime                @default(now())
-  id                    Int                     @id @default(autoincrement())
-  createdAt             DateTime                @default(now())
-  epicBoostLevel        Int                     @default(0)
-  extraTimeLevel        Int                     @default(0)
-  multiplierLevel       Int                     @default(0)
-  stars                 Int                     @default(0)
+  id         Int      @id @default(autoincrement())
+  telegramId String   @unique
+  username   String?
+  firstName  String?
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  epicBoostLevel  Int @default(0)
+  extraTimeLevel  Int @default(0)
+  multiplierLevel Int @default(0)
+
+  stars Int @default(0)
+  coins Int @default(0)
+
   dailyCatch1000ClaimAt DateTime?
   dailyEpic100ClaimAt   DateTime?
   dailyPlay3ClaimAt     DateTime?
-  level                 Int                     @default(1)
-  xp                    Int                     @default(0)
-  coins                 Int                     @default(0)
-  games                 Game[]
-  referralsReceived     Referral[]              @relation("UserInvited")
-  referralsSent         Referral[]              @relation("UserInviter")
-  tournaments           TournamentParticipant[]
-  Payment               Payment[]
-  Withdrawal            Withdrawal[]
+
+  level Int @default(1)
+  xp    Int @default(0)
+
+  // relations
+  games             Game[]
+  referralsReceived Referral[]              @relation("UserInvited")
+  referralsSent     Referral[]              @relation("UserInviter")
+  tournaments       TournamentParticipant[]
+  payments          Payment[]
+  withdrawals       Withdrawal[]
 }
 
 model Game {
@@ -40,7 +48,8 @@ model Game {
   finishedAt DateTime?
   clicks     Int?      @default(0)
   epicCount  Int?      @default(0)
-  user       User      @relation(fields: [userId], references: [id])
+
+  user User @relation(fields: [userId], references: [id])
 }
 
 model Referral {
@@ -49,32 +58,35 @@ model Referral {
   invitedId Int
   rewarded  Boolean  @default(false)
   createdAt DateTime @default(now())
-  invited   User     @relation("UserInvited", fields: [invitedId], references: [id])
-  inviter   User     @relation("UserInviter", fields: [inviterId], references: [id])
+
+  invited User @relation("UserInvited", fields: [invitedId], references: [id])
+  inviter User @relation("UserInviter", fields: [inviterId], references: [id])
 
   @@unique([inviterId, invitedId])
 }
 
 model Tournament {
-  id           Int                     @id @default(autoincrement())
+  id           Int              @id @default(autoincrement())
   startsAt     DateTime
   endsAt       DateTime
   joinDeadline DateTime
   entryFee     Int
-  prizePool    Int                     @default(0)
-  status       TournamentStatus        @default(PLANNED)
-  createdAt    DateTime                @default(now())
+  prizePool    Int              @default(0)
+  status       TournamentStatus @default(PLANNED)
+  createdAt    DateTime         @default(now())
+
   participants TournamentParticipant[]
 }
 
 model TournamentParticipant {
-  id           Int        @id @default(autoincrement())
+  id           Int      @id @default(autoincrement())
   userId       Int
   tournamentId Int
-  score        Int        @default(0)
-  createdAt    DateTime   @default(now())
-  tournament   Tournament @relation(fields: [tournamentId], references: [id])
-  user         User       @relation(fields: [userId], references: [id])
+  score        Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  tournament Tournament @relation(fields: [tournamentId], references: [id])
+  user       User       @relation(fields: [userId], references: [id])
 
   @@unique([userId, tournamentId])
 }
@@ -86,9 +98,10 @@ model Payment {
   starsAmount             Int
   coinsAmount             Int
   payload                 String?
-  user                    User     @relation(fields: [userId], references: [id])
-  userId                  Int
   createdAt               DateTime @default(now())
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
 }
 
 model Withdrawal {

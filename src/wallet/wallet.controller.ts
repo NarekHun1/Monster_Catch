@@ -6,9 +6,10 @@ import {
   Req,
   UnauthorizedException,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { WalletService } from './wallet.service';
-import { CreateWithdrawDto } from './dto/create-withdraw.dto';
 import { AuthService } from '../auth/auth.service';
+import { WithdrawalCurrency } from '@prisma/client';
 
 @Controller('wallet')
 export class WalletController {
@@ -17,34 +18,47 @@ export class WalletController {
     private readonly auth: AuthService,
   ) {}
 
-  /** Достаём userId из заголовка Authorization: Bearer <token> */
-  private getUserIdFromRequest(req: any): number {
-    const authHeader: string | undefined =
-      req.headers['authorization'] || req.headers['Authorization'];
-
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new UnauthorizedException('Missing Bearer token');
+  private getUserIdFromRequest(req: Request): number {
+    const authHeader = req.headers['authorization'] || '';
+    const token = authHeader.toString().replace('Bearer ', '').trim();
+    if (!token) {
+      throw new UnauthorizedException('TOKEN_MISSING');
     }
-
-    const token = authHeader.replace('Bearer ', '').trim();
     return this.auth.getUserIdFromToken(token);
   }
 
-  @Post('withdraw')
-  async withdraw(@Req() req, @Body() dto: CreateWithdrawDto) {
+  @Get('info')
+  async info(@Req() req: Request) {
     const userId = this.getUserIdFromRequest(req);
-
-    return this.wallet.requestWithdraw(
-      userId,
-      dto.coins,
-      dto.network,
-      dto.address,
-    );
+    return this.wallet.getInfo(userId);
   }
 
-  @Get('withdrawals')
-  async getMyWithdrawals(@Req() req) {
+  @Post('link-address')
+  async linkAddress(
+    @Req() req: Request,
+    @Body() body: { type: 'USDT' | 'TON'; address: string },
+  ) {
     const userId = this.getUserIdFromRequest(req);
-    return this.wallet.listUserWithdrawals(userId);
+    if (body.type !== 'USDT' && body.type !== 'TON') {
+      throw new UnauthorizedException('UNSUPPORTED_TYPE');
+    }
+    return this.wallet.linkAddress(userId, body.type, body.address);
+  }
+
+  @Post('withdraw')
+  async withdraw(
+    @Req() req: Request,
+    @Body()
+    body: {
+      currency: WithdrawalCurrency; // 'USDT' | 'TON'
+      coinsAmount: number;
+    },
+  ) {
+    const userId = this.getUserIdFromRequest(req);
+    return this.wallet.requestWithdrawal(
+      userId,
+      body.currency,
+      Number(body.coinsAmount),
+    );
   }
 }
