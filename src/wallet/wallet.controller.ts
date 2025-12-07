@@ -24,7 +24,10 @@ export class WalletController {
   constructor(private readonly wallet: WalletService) {}
 
   @Get('info')
-  async info(@Req() req: Request, @Headers('authorization') authHeader?: string) {
+  async info(
+    @Req() req: Request,
+    @Headers('authorization') authHeader?: string,
+  ) {
     const token = extractToken(req, authHeader);
     if (!token) throw new UnauthorizedException('TOKEN_MISSING');
     return this.wallet.getWalletInfo(token);
@@ -39,6 +42,17 @@ export class WalletController {
     const token = extractToken(req, authHeader);
     if (!token) throw new UnauthorizedException('TOKEN_MISSING');
     return this.wallet.saveAddresses(token, body);
+  }
+  @Post('set-address')
+  async setAddress(
+    @Req() req: Request,
+    @Body()
+    body: { tonAddress?: string; usdtAddress?: string; usdtNetwork?: string },
+  ) {
+    const userId = this.auth.getUserIdFromToken(req);
+
+    const user = await this.wallet.setAddress(userId, body);
+    return { ok: true, user };
   }
 
   @Post('withdraw')

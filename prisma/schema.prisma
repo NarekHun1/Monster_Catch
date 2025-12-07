@@ -31,8 +31,10 @@ model User {
   level Int @default(1)
   xp    Int @default(0)
 
-  usdtAddress       String?
-  tonAddress        String?
+  tonAddress  String? // TON адрес
+  usdtAddress String? // USDT адрес (TRC20, BEP20, etc.)
+  usdtNetwork String? // TRC20 / BEP20 / ERC20
+
   // relations
   games             Game[]
   referralsReceived Referral[]              @relation("UserInvited")

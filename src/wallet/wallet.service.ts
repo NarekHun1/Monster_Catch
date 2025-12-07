@@ -5,7 +5,7 @@ import { WithdrawalStatus } from '@prisma/client';
 import { AuthService } from '../auth/auth.service';
 
 const COIN_PRICE_USD = 0.02; // 1 coin = 0.02$
-const MIN_WITHDRAW_USD = 1;  // минималка на вывод 1$
+const MIN_WITHDRAW_USD = 1; // минималка на вывод 1$
 
 @Injectable()
 export class WalletService {
@@ -13,6 +13,19 @@ export class WalletService {
     private readonly prisma: PrismaService,
     private readonly auth: AuthService,
   ) {}
+  async setAddress(
+    userId: number,
+    data: { tonAddress?: string; usdtAddress?: string; usdtNetwork?: string },
+  ) {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        tonAddress: data.tonAddress ?? undefined,
+        usdtAddress: data.usdtAddress ?? undefined,
+        usdtNetwork: data.usdtNetwork ?? undefined,
+      },
+    });
+  }
 
   // инфо для фронта
   async getWalletInfo(token: string) {
