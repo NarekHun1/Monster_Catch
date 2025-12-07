@@ -1,80 +1,71 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+// src/wallet/wallet.service.ts
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { ConfigService } from '@nestjs/config';
-import { WithdrawalCurrency, WithdrawalStatus } from '@prisma/client';
+import { WithdrawalStatus } from '@prisma/client';
+import { AuthService } from '../auth/auth.service';
+
+const COIN_PRICE_USD = 0.02; // 1 coin = 0.02$
+const MIN_WITHDRAW_USD = 1;  // минималка на вывод 1$
 
 @Injectable()
 export class WalletService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly config: ConfigService,
+    private readonly auth: AuthService,
   ) {}
 
-  private getCoinPriceUsd(): number {
-    const v = this.config.get<string>('COIN_PRICE_USD') ?? '0.02';
-    return Number(v);
-  }
+  // инфо для фронта
+  async getWalletInfo(token: string) {
+    const userId = this.auth.getUserIdFromToken(token);
 
-  private getMinWithdrawUsd(): number {
-    const v = this.config.get<string>('MIN_WITHDRAW_USD') ?? '5';
-    return Number(v);
-  }
-
-  async getInfo(userId: number) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       include: {
         withdrawals: {
           orderBy: { createdAt: 'desc' },
-          take: 5,
+          take: 20,
         },
       },
     });
 
-    if (!user) throw new NotFoundException('USER_NOT_FOUND');
+    if (!user) throw new BadRequestException('USER_NOT_FOUND');
 
-    const coinPriceUsd = this.getCoinPriceUsd();
-    const minWithdrawUsd = this.getMinWithdrawUsd();
-    const minWithdrawCoins = Math.ceil(minWithdrawUsd / coinPriceUsd);
-
-    const approxUsd = Number((user.coins * coinPriceUsd).toFixed(2));
+    const usdBalance = user.coins * COIN_PRICE_USD;
 
     return {
       coins: user.coins,
-      approxUsd,
-      coinPriceUsd,
-      minWithdrawUsd,
-      minWithdrawCoins,
+      usdBalance,
+      coinPriceUsd: COIN_PRICE_USD,
       usdtAddress: user.usdtAddress,
       tonAddress: user.tonAddress,
-      recentWithdrawals: user.withdrawals.map((w) => ({
+      withdrawals: user.withdrawals.map((w) => ({
         id: w.id,
         createdAt: w.createdAt,
-        coinsAmount: w.coinsAmount,
-        usdAmount: w.usdAmount,
+        coins: w.coins,
+        amountUsd: w.amountUsd,
+        amountTon: w.amountTon,
         currency: w.currency,
+        network: w.network,
+        address: w.address,
         status: w.status,
         txHash: w.txHash,
       })),
     };
   }
 
-  async linkAddress(
-    userId: number,
-    type: 'USDT' | 'TON',
-    address: string,
+  // сохранить/обновить адреса кошельков
+  async saveAddresses(
+    token: string,
+    data: { usdtAddress?: string; tonAddress?: string },
   ) {
-    if (!address || address.trim().length < 5) {
-      throw new BadRequestException('ADDRESS_TOO_SHORT');
-    }
-
-    const data: any = {};
-    if (type === 'USDT') data.usdtAddress = address.trim();
-    if (type === 'TON') data.tonAddress = address.trim();
+    const userId = this.auth.getUserIdFromToken(token);
 
     const user = await this.prisma.user.update({
       where: { id: userId },
-      data,
+      data: {
+        usdtAddress: data.usdtAddress ?? null,
+        tonAddress: data.tonAddress ?? null,
+      },
     });
 
     return {
@@ -83,71 +74,78 @@ export class WalletService {
     };
   }
 
+  // запрос вывода
   async requestWithdrawal(
-    userId: number,
-    currency: WithdrawalCurrency,
-    coinsAmount: number,
+    token: string,
+    params: {
+      coins: number;
+      currency: 'USDT' | 'TON';
+      network: string;
+      addressType: 'SAVED' | 'CUSTOM';
+      customAddress?: string;
+    },
   ) {
-    if (coinsAmount <= 0) {
-      throw new BadRequestException('AMOUNT_MUST_BE_POSITIVE');
+    const userId = this.auth.getUserIdFromToken(token);
+
+    if (!Number.isFinite(params.coins) || params.coins <= 0) {
+      throw new BadRequestException('INVALID_COINS_AMOUNT');
     }
 
-    const coinPriceUsd = this.getCoinPriceUsd();
-    const minWithdrawUsd = this.getMinWithdrawUsd();
-    const minWithdrawCoins = Math.ceil(minWithdrawUsd / coinPriceUsd);
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new BadRequestException('USER_NOT_FOUND');
 
-    if (coinsAmount < minWithdrawCoins) {
-      throw new BadRequestException('AMOUNT_TOO_SMALL');
+    if (user.coins < params.coins) {
+      throw new BadRequestException('NOT_ENOUGH_COINS');
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-      });
+    const amountUsd = params.coins * COIN_PRICE_USD;
+    if (amountUsd < MIN_WITHDRAW_USD) {
+      throw new BadRequestException('MIN_WITHDRAW_1_USD');
+    }
 
-      if (!user) {
-        throw new NotFoundException('USER_NOT_FOUND');
-      }
+    // адрес — либо сохранённый, либо кастомный
+    let address: string | null = null;
 
-      if (user.coins < coinsAmount) {
-        throw new BadRequestException('NOT_ENOUGH_COINS');
-      }
-
-      let address: string | null = null;
-      if (currency === 'USDT') address = user.usdtAddress;
-      if (currency === 'TON') address = user.tonAddress;
-
+    if (params.addressType === 'SAVED') {
+      if (params.currency === 'USDT') address = user.usdtAddress ?? null;
+      if (params.currency === 'TON') address = user.tonAddress ?? null;
       if (!address) {
-        throw new BadRequestException('ADDRESS_NOT_LINKED');
+        throw new BadRequestException('SAVED_ADDRESS_NOT_SET');
       }
+    } else {
+      address = params.customAddress?.trim() || null;
+      if (!address) throw new BadRequestException('ADDRESS_REQUIRED');
+    }
 
-      const usdAmount = Number((coinsAmount * coinPriceUsd).toFixed(2));
-
-      // списываем монеты + создаём заявку
-      const updatedUser = await tx.user.update({
+    const { withdrawal } = await this.prisma.$transaction(async (tx) => {
+      // списываем монеты
+      await tx.user.update({
         where: { id: userId },
-        data: {
-          coins: { decrement: coinsAmount },
-        },
+        data: { coins: { decrement: params.coins } },
       });
 
-      const withdrawal = await tx.withdrawal.create({
+      // создаём запись вывода
+      const w = await tx.withdrawal.create({
         data: {
           userId,
-          coinsAmount,
-          usdAmount,
-          currency,
+          coins: params.coins,
+          amountUsd,
+          amountTon: params.currency === 'TON' ? 0 : null, // потом можешь проставлять реальный TON
+          currency: params.currency, // 'USDT' | 'TON'
+          network: params.network,
           address,
           status: WithdrawalStatus.PENDING,
         },
       });
 
-      return {
-        userCoins: updatedUser.coins,
-        withdrawalId: withdrawal.id,
-        status: withdrawal.status,
-        usdAmount: withdrawal.usdAmount,
-      };
+      return { withdrawal: w };
     });
+
+    return {
+      id: withdrawal.id,
+      status: withdrawal.status,
+      coins: withdrawal.coins,
+      amountUsd: withdrawal.amountUsd,
+    };
   }
 }

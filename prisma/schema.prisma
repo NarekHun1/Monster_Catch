@@ -31,6 +31,8 @@ model User {
   level Int @default(1)
   xp    Int @default(0)
 
+  usdtAddress       String?
+  tonAddress        String?
   // relations
   games             Game[]
   referralsReceived Referral[]              @relation("UserInvited")

@@ -1,48 +1,44 @@
+// src/wallet/wallet.controller.ts
 import {
   Body,
   Controller,
   Get,
   Post,
   Req,
+  Headers,
   UnauthorizedException,
 } from '@nestjs/common';
-import { Request } from 'express';
+import type { Request } from 'express';
 import { WalletService } from './wallet.service';
-import { AuthService } from '../auth/auth.service';
-import { WithdrawalCurrency } from '@prisma/client';
+
+function extractToken(req: Request, authHeader?: string): string | null {
+  const header = authHeader ?? req.headers.authorization;
+  if (!header) return null;
+  const [type, token] = header.split(' ');
+  if (type !== 'Bearer' || !token) return null;
+  return token;
+}
 
 @Controller('wallet')
 export class WalletController {
-  constructor(
-    private readonly wallet: WalletService,
-    private readonly auth: AuthService,
-  ) {}
-
-  private getUserIdFromRequest(req: Request): number {
-    const authHeader = req.headers['authorization'] || '';
-    const token = authHeader.toString().replace('Bearer ', '').trim();
-    if (!token) {
-      throw new UnauthorizedException('TOKEN_MISSING');
-    }
-    return this.auth.getUserIdFromToken(token);
-  }
+  constructor(private readonly wallet: WalletService) {}
 
   @Get('info')
-  async info(@Req() req: Request) {
-    const userId = this.getUserIdFromRequest(req);
-    return this.wallet.getInfo(userId);
+  async info(@Req() req: Request, @Headers('authorization') authHeader?: string) {
+    const token = extractToken(req, authHeader);
+    if (!token) throw new UnauthorizedException('TOKEN_MISSING');
+    return this.wallet.getWalletInfo(token);
   }
 
-  @Post('link-address')
-  async linkAddress(
+  @Post('addresses')
+  async saveAddresses(
     @Req() req: Request,
-    @Body() body: { type: 'USDT' | 'TON'; address: string },
+    @Body() body: { usdtAddress?: string; tonAddress?: string },
+    @Headers('authorization') authHeader?: string,
   ) {
-    const userId = this.getUserIdFromRequest(req);
-    if (body.type !== 'USDT' && body.type !== 'TON') {
-      throw new UnauthorizedException('UNSUPPORTED_TYPE');
-    }
-    return this.wallet.linkAddress(userId, body.type, body.address);
+    const token = extractToken(req, authHeader);
+    if (!token) throw new UnauthorizedException('TOKEN_MISSING');
+    return this.wallet.saveAddresses(token, body);
   }
 
   @Post('withdraw')
@@ -50,15 +46,16 @@ export class WalletController {
     @Req() req: Request,
     @Body()
     body: {
-      currency: WithdrawalCurrency; // 'USDT' | 'TON'
-      coinsAmount: number;
+      coins: number;
+      currency: 'USDT' | 'TON';
+      network: string;
+      addressType: 'SAVED' | 'CUSTOM';
+      customAddress?: string;
     },
+    @Headers('authorization') authHeader?: string,
   ) {
-    const userId = this.getUserIdFromRequest(req);
-    return this.wallet.requestWithdrawal(
-      userId,
-      body.currency,
-      Number(body.coinsAmount),
-    );
+    const token = extractToken(req, authHeader);
+    if (!token) throw new UnauthorizedException('TOKEN_MISSING');
+    return this.wallet.requestWithdrawal(token, body);
   }
 }
