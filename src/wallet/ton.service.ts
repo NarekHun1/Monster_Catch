@@ -3,7 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TonClient, WalletContractV5R1, internal, SendMode } from '@ton/ton';
 import { Address, toNano } from '@ton/core';
-import { mnemonicToPrivateKey } from '@ton/crypto';
+import { mnemonicToWalletKey } from '@ton/crypto';
 
 @Injectable()
 export class TonService {
@@ -29,7 +29,7 @@ export class TonService {
   }
 
   async sendTon(toAddress: string, amountTon: string): Promise<string> {
-    const keyPair = await mnemonicToPrivateKey(this.mnemonicWords);
+    const keyPair = await mnemonicToWalletKey(this.mnemonicWords);
 
     const wallet = WalletContractV5R1.create({
       workchain: 0,
@@ -39,13 +39,11 @@ export class TonService {
     const contract = this.client.open(wallet);
 
     const oldSeqno = await contract.getSeqno();
-    this.logger.log(`SEQNO before: ${oldSeqno}`);
 
-    // отправляем транзакцию
     await contract.sendTransfer({
       seqno: oldSeqno,
-      secretKey: keyPair.secretKey,
-      sendMode: SendMode.PAY_GAS_SEPARATELY | SendMode.IGNORE_ERRORS,
+      secretKey: keyPair.secretKey, // теперь правильный формат ключа!
+      sendMode: SendMode.PAY_GAS_SEPARATELY,
       messages: [
         internal({
           to: Address.parse(toAddress),
@@ -54,18 +52,15 @@ export class TonService {
       ],
     });
 
-    // ждём подтверждение сети: seqno должен увеличиться
+    // ждём, пока seqno увеличится
     for (let i = 0; i < 20; i++) {
       await new Promise((r) => setTimeout(r, 1500));
-
       const newSeqno = await contract.getSeqno();
-
       if (newSeqno > oldSeqno) {
-        this.logger.log(`TON sent! New seqno = ${newSeqno}`);
         return `tx-${Date.now()}`;
       }
     }
 
-    throw new Error('TON NOT SENT — seqno did NOT increase!');
+    throw new Error("TON not sent — seqno didn't increase");
   }
 }
