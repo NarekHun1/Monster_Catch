@@ -1,12 +1,13 @@
 // src/wallet/ton.service.ts
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { TonClient, WalletContractV4, internal } from '@ton/ton';
+import { TonClient, WalletContractV5R1, internal, SendMode } from '@ton/ton';
 import { Address, toNano } from '@ton/core';
 import { mnemonicToPrivateKey } from '@ton/crypto';
 
 @Injectable()
 export class TonService {
+  private readonly logger = new Logger(TonService.name);
   private readonly client: TonClient;
   private readonly mnemonicWords: string[];
 
@@ -15,15 +16,9 @@ export class TonService {
     const apiKey = this.config.get<string>('TONCENTER_API_KEY');
     const mnemonic = this.config.get<string>('TON_WALLET_MNEMONIC');
 
-    if (!endpoint) {
-      throw new Error('TON_ENDPOINT is not set');
-    }
-    if (!apiKey) {
-      throw new Error('TONCENTER_API_KEY is not set');
-    }
-    if (!mnemonic) {
-      throw new Error('TON_WALLET_MNEMONIC is not set');
-    }
+    if (!endpoint) throw new Error('TON_ENDPOINT is not set');
+    if (!apiKey) throw new Error('TONCENTER_API_KEY is not set');
+    if (!mnemonic) throw new Error('TON_WALLET_MNEMONIC is not set');
 
     this.client = new TonClient({
       endpoint,
@@ -33,16 +28,10 @@ export class TonService {
     this.mnemonicWords = mnemonic.trim().split(/\s+/);
   }
 
-  /**
-   * Отправка TON с проектного кошелька на адрес пользователя.
-   * amountTon — строка, например "0.5"
-   * Возвращаем строку (txHash или пока просто id операции).
-   */
   async sendTon(toAddress: string, amountTon: string): Promise<string> {
-    // получаем приватный ключ из мнемоники
     const keyPair = await mnemonicToPrivateKey(this.mnemonicWords);
 
-    const wallet = WalletContractV4.create({
+    const wallet = WalletContractV5R1.create({
       workchain: 0,
       publicKey: keyPair.publicKey,
     });
@@ -50,11 +39,12 @@ export class TonService {
     const contract = this.client.open(wallet);
 
     const seqno = await contract.getSeqno();
+    this.logger.log(`SEQNO = ${seqno}`);
 
     await contract.sendTransfer({
       seqno,
-      // ВАЖНО: делаем Buffer из secretKey, иначе будет ошибка типов
-      secretKey: Buffer.from(keyPair.secretKey),
+      secretKey: keyPair.secretKey,
+      sendMode: SendMode.PAY_GAS_SEPARATELY,
       messages: [
         internal({
           to: Address.parse(toAddress),
@@ -63,7 +53,6 @@ export class TonService {
       ],
     });
 
-    // Тут можно потом доработать получение реального txHash.
-    return `ton-transfer-${Date.now()}`;
+    return `tx-${Date.now()}`;
   }
 }

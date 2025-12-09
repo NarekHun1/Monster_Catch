@@ -14,7 +14,7 @@ export class WalletService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auth: AuthService,
-    private readonly tonService: TonService, // 👈 добавили
+    private readonly tonService: TonService,
   ) {}
   async setAddress(
     userId: number,
