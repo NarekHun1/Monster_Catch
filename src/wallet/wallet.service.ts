@@ -171,6 +171,8 @@ export class WalletService {
         amountTon = params.coins * COIN_PRICE_TON; // 👈 сам подбери нужный курс
         const tonAmountStr = amountTon.toString();
 
+        console.log("WITHDRAW to address =", address);
+
         txHash = await this.tonService.sendTon(address, tonAmountStr);
 
         await this.prisma.withdrawal.update({
