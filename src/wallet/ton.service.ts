@@ -38,13 +38,14 @@ export class TonService {
 
     const contract = this.client.open(wallet);
 
-    const seqno = await contract.getSeqno();
-    this.logger.log(`SEQNO = ${seqno}`);
+    const oldSeqno = await contract.getSeqno();
+    this.logger.log(`SEQNO before: ${oldSeqno}`);
 
+    // отправляем транзакцию
     await contract.sendTransfer({
-      seqno,
+      seqno: oldSeqno,
       secretKey: keyPair.secretKey,
-      sendMode: SendMode.PAY_GAS_SEPARATELY,
+      sendMode: SendMode.PAY_GAS_SEPARATELY | SendMode.IGNORE_ERRORS,
       messages: [
         internal({
           to: Address.parse(toAddress),
@@ -53,6 +54,18 @@ export class TonService {
       ],
     });
 
-    return `tx-${Date.now()}`;
+    // ждём подтверждение сети: seqno должен увеличиться
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+
+      const newSeqno = await contract.getSeqno();
+
+      if (newSeqno > oldSeqno) {
+        this.logger.log(`TON sent! New seqno = ${newSeqno}`);
+        return `tx-${Date.now()}`;
+      }
+    }
+
+    throw new Error('TON NOT SENT — seqno did NOT increase!');
   }
 }
