@@ -131,6 +131,19 @@ export class WalletService {
     if (params.addressType === 'SAVED') {
       if (params.currency === 'USDT') address = user.usdtAddress ?? null;
       if (params.currency === 'TON') address = user.tonAddress ?? null;
+      if (params.currency === 'TON') {
+        if (!user.tonAddress) {
+          throw new BadRequestException('TON_ADDRESS_NOT_SET');
+        }
+
+        address = user.tonAddress;
+
+        // ❗ пользователь пытается вывести на тот же самый кошелёк, который используется для выплат
+        if (address === this.tonService.walletAddress) {
+          throw new BadRequestException('CANNOT_WITHDRAW_TO_SAME_WALLET');
+        }
+      }
+
       if (!address) {
         throw new BadRequestException('SAVED_ADDRESS_NOT_SET');
       }
@@ -171,7 +184,7 @@ export class WalletService {
         amountTon = params.coins * COIN_PRICE_TON; // 👈 сам подбери нужный курс
         const tonAmountStr = amountTon.toString();
 
-        console.log("WITHDRAW to address =", address);
+        console.log('WITHDRAW to address =', address);
 
         txHash = await this.tonService.sendTon(address, tonAmountStr);
 

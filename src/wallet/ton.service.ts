@@ -7,6 +7,8 @@ import { mnemonicToPrivateKey } from '@ton/crypto';
 
 @Injectable()
 export class TonService {
+  public walletAddress: string;
+
   private readonly client: TonClient;
   private readonly mnemonicWords: string[];
 
@@ -21,6 +23,7 @@ export class TonService {
 
     this.client = new TonClient({ endpoint, apiKey });
     this.mnemonicWords = mnemonic.trim().split(/\s+/);
+    this.walletAddress = `UQBMUf6rkqfF_kxnhtdhB855Uah1Bl6fe0MWAZdU9Lnk7nHX`;
   }
 
   /**
