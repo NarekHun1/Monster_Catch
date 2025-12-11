@@ -43,15 +43,36 @@ export class GameService {
   }
 
   async getLeaderboard() {
-    return this.prisma.game.findMany({
+    const bestScores = await this.prisma.game.groupBy({
+      by: ['userId'],
+      _max: { score: true },
       where: {
         score: { gt: 0 },
         finishedAt: { not: null },
       },
-      orderBy: { score: 'desc' },
+      orderBy: {
+        _max: { score: 'desc' },
+      },
       take: 20,
-      include: { user: true },
     });
+
+    // Теперь нужно подтянуть данные юзеров
+    const result = await Promise.all(
+      bestScores.map(async (entry) => {
+        const user = await this.prisma.user.findUnique({
+          where: { id: entry.userId },
+          select: { id: true, username: true, firstName: true },
+        });
+
+        return {
+          id: entry.userId,
+          score: entry._max.score,
+          user,
+        };
+      }),
+    );
+
+    return result;
   }
 
   /** Начать игру: создаём Game в БД и возвращаем gameId + длительность раунда */
