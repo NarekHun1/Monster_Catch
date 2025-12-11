@@ -26,6 +26,15 @@ export class TonService {
     this.walletAddress = `UQBMUf6rkqfF_kxnhtdhB855Uah1Bl6fe0MWAZdU9Lnk7nHX`;
   }
 
+  async isWalletDeployed(addr: string): Promise<boolean> {
+    try {
+      const address = Address.parse(addr);
+      return await this.client.isContractDeployed(address);
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Отправка TON пользователю
    */

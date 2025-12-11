@@ -147,6 +147,11 @@ export class WalletService {
       if (!address) {
         throw new BadRequestException('SAVED_ADDRESS_NOT_SET');
       }
+      // ❗ проверка DEPLOY
+      const isDeployed = await this.tonService.isWalletDeployed(address);
+      if (!isDeployed) {
+        throw new BadRequestException('TON_WALLET_NOT_ACTIVATED');
+      }
     } else {
       address = params.customAddress?.trim() || null;
       if (!address) throw new BadRequestException('ADDRESS_REQUIRED');
