@@ -5,8 +5,8 @@ import { WithdrawalStatus } from '@prisma/client';
 import { AuthService } from '../auth/auth.service';
 import { TonService } from './ton.service';
 
-const COIN_PRICE_USD = 0.02; // 1 coin = 0.02$
-const MIN_WITHDRAW_USD = 1; // минималка на вывод 1$
+const COIN_PRICE_USD = 0.02;
+const MIN_WITHDRAW_USD = 1;
 const COIN_PRICE_TON = 0.02;
 
 @Injectable()
@@ -16,21 +16,10 @@ export class WalletService {
     private readonly auth: AuthService,
     private readonly tonService: TonService,
   ) {}
-  async setAddress(
-    userId: number,
-    data: { tonAddress?: string; usdtAddress?: string; usdtNetwork?: string },
-  ) {
-    return this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        tonAddress: data.tonAddress ?? undefined,
-        usdtAddress: data.usdtAddress ?? undefined,
-        usdtNetwork: data.usdtNetwork ?? undefined,
-      },
-    });
-  }
 
-  // инфо для фронта
+  // ------------------------------
+  // Получить информацию кошелька
+  // ------------------------------
   async getWalletInfo(token: string) {
     const userId = this.auth.getUserIdFromToken(token);
 
@@ -54,41 +43,25 @@ export class WalletService {
       coinPriceUsd: COIN_PRICE_USD,
       usdtAddress: user.usdtAddress,
       tonAddress: user.tonAddress,
-      withdrawals: user.withdrawals.map((w) => ({
-        id: w.id,
-        createdAt: w.createdAt,
-        coins: w.coins,
-        amountUsd: w.amountUsd,
-        amountTon: w.amountTon,
-        currency: w.currency,
-        network: w.network,
-        address: w.address,
-        status: w.status,
-        txHash: w.txHash,
-      })),
+      withdrawals: user.withdrawals,
     };
   }
 
-  // сохранить/обновить адреса кошельков
+  // ------------------------------
+  // Сохранить адрес кошельков
+  // ------------------------------
   async saveAddresses(
     token: string,
     data: { usdtAddress?: string; tonAddress?: string },
   ) {
     const userId = this.auth.getUserIdFromToken(token);
 
-    const updateData: any = {};
-
-    if (data.usdtAddress !== undefined) {
-      updateData.usdtAddress = data.usdtAddress || null;
-    }
-
-    if (data.tonAddress !== undefined) {
-      updateData.tonAddress = data.tonAddress || null;
-    }
-
     const user = await this.prisma.user.update({
       where: { id: userId },
-      data: updateData,
+      data: {
+        usdtAddress: data.usdtAddress ?? undefined,
+        tonAddress: data.tonAddress ?? undefined,
+      },
     });
 
     return {
@@ -96,7 +69,10 @@ export class WalletService {
       tonAddress: user.tonAddress,
     };
   }
-  // запрос вывода
+
+  // ------------------------------
+  // ✔ Корректный запрос на вывод
+  // ------------------------------
   async requestWithdrawal(
     token: string,
     params: {
@@ -109,55 +85,51 @@ export class WalletService {
   ) {
     const userId = this.auth.getUserIdFromToken(token);
 
-    if (!Number.isFinite(params.coins) || params.coins <= 0) {
+    // 1️⃣ Проверки суммы
+    if (!Number.isFinite(params.coins) || params.coins <= 0)
       throw new BadRequestException('INVALID_COINS_AMOUNT');
-    }
 
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new BadRequestException('USER_NOT_FOUND');
 
-    if (user.coins < params.coins) {
+    if (user.coins < params.coins)
       throw new BadRequestException('NOT_ENOUGH_COINS');
-    }
 
     const amountUsd = params.coins * COIN_PRICE_USD;
-    if (amountUsd < MIN_WITHDRAW_USD) {
+    if (amountUsd < MIN_WITHDRAW_USD)
       throw new BadRequestException('MIN_WITHDRAW_1_USD');
-    }
 
-    // адрес
-    let address: string | null = null;
+    // 2️⃣ Определяем адрес
+    let address: string;
 
     if (params.addressType === 'SAVED') {
-      if (params.currency === 'USDT') address = user.usdtAddress ?? null;
-      if (params.currency === 'TON') address = user.tonAddress ?? null;
-      if (params.currency === 'TON') {
-        if (!user.tonAddress) {
+      if (params.currency === 'USDT') {
+        if (!user.usdtAddress)
+          throw new BadRequestException('SAVED_ADDRESS_NOT_SET');
+        address = user.usdtAddress;
+      } else {
+        if (!user.tonAddress)
           throw new BadRequestException('TON_ADDRESS_NOT_SET');
-        }
-
         address = user.tonAddress;
 
-        // ❗ пользователь пытается вывести на тот же самый кошелёк, который используется для выплат
-        if (address === this.tonService.walletAddress) {
+        // запрет вывода на адрес проекта
+        if (address === this.tonService.walletAddress)
           throw new BadRequestException('CANNOT_WITHDRAW_TO_SAME_WALLET');
-        }
-      }
-
-      if (!address) {
-        throw new BadRequestException('SAVED_ADDRESS_NOT_SET');
-      }
-      // ❗ проверка DEPLOY
-      const isDeployed = await this.tonService.isWalletDeployed(address);
-      if (!isDeployed) {
-        throw new BadRequestException('TON_WALLET_NOT_ACTIVATED');
       }
     } else {
-      address = params.customAddress?.trim() || null;
-      if (!address) throw new BadRequestException('ADDRESS_REQUIRED');
+      const custom = params.customAddress?.trim();
+      if (!custom) throw new BadRequestException('ADDRESS_REQUIRED');
+      address = custom;
     }
 
-    // сначала создаём запись вывода (PENDING) и списываем монеты
+    // 3️⃣ Проверка DEPLOY для TON перед списанием
+    if (params.currency === 'TON') {
+      const deployed = await this.tonService.isWalletDeployed(address);
+      if (!deployed)
+        throw new BadRequestException('TON_WALLET_NOT_ACTIVATED');
+    }
+
+    // 4️⃣ Создаем запись и списываем монеты
     const { withdrawal } = await this.prisma.$transaction(async (tx) => {
       await tx.user.update({
         where: { id: userId },
@@ -182,16 +154,13 @@ export class WalletService {
 
     let txHash: string | null = null;
     let amountTon: number | null = null;
+    let finalStatus: WithdrawalStatus = WithdrawalStatus.PENDING;
 
-    // Если вывод в TON — пробуем отправить автоматически
+    // 5️⃣ Отправка TON
     if (params.currency === 'TON') {
       try {
-        amountTon = params.coins * COIN_PRICE_TON; // 👈 сам подбери нужный курс
-        const tonAmountStr = amountTon.toString();
-
-        console.log('WITHDRAW to address =', address);
-
-        txHash = await this.tonService.sendTon(address, tonAmountStr);
+        amountTon = params.coins * COIN_PRICE_TON;
+        txHash = await this.tonService.sendTon(address, String(amountTon));
 
         await this.prisma.withdrawal.update({
           where: { id: withdrawal.id },
@@ -202,13 +171,24 @@ export class WalletService {
             processedAt: new Date(),
           },
         });
+
+        finalStatus = WithdrawalStatus.PAID;
       } catch (e) {
-        console.error('TON send failed', e);
-        await this.prisma.withdrawal.update({
-          where: { id: withdrawal.id },
-          data: {
-            status: WithdrawalStatus.REJECTED,
-          },
+        console.error('TON SEND FAILED:', e);
+
+        // 🔥 Возврат монет пользователю
+        await this.prisma.$transaction(async (tx) => {
+          await tx.user.update({
+            where: { id: userId },
+            data: { coins: { increment: params.coins } },
+          });
+
+          await tx.withdrawal.update({
+            where: { id: withdrawal.id },
+            data: {
+              status: WithdrawalStatus.REJECTED,
+            },
+          });
         });
 
         throw new BadRequestException('TON_TRANSFER_FAILED');
@@ -217,8 +197,7 @@ export class WalletService {
 
     return {
       id: withdrawal.id,
-      status:
-        params.currency === 'TON' ? WithdrawalStatus.PAID : withdrawal.status,
+      status: finalStatus,
       coins: withdrawal.coins,
       amountUsd: withdrawal.amountUsd,
       txHash,
