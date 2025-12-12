@@ -35,12 +35,18 @@ export class TournamentController {
   // GET /tournament/current?type=HOURLY|DAILY
   // ─────────────────────────────────────
   @Get('current')
-  async current(@Query('type') type?: TournamentType) {
+  async current(
+    @Query('type') type?: TournamentType,
+    @Headers('authorization') auth?: string,
+  ) {
     if (!type) {
       throw new BadRequestException('Tournament type is required');
     }
 
-    return this.service.getCurrentLeaderboard(type);
+    const token =
+      auth && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+
+    return this.service.getCurrentTournament(type, token);
   }
 
   // ─────────────────────────────────────

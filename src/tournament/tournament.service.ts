@@ -278,57 +278,49 @@ export class TournamentService {
   // ─────────────────────────────────────────────
   // LEADERBOARD
   // ─────────────────────────────────────────────
-  async getCurrentLeaderboard(type: TournamentType) {
-    const now = new Date();
+  async getCurrentTournament(type: TournamentType, token?: string) {
+    const tournament = await this.getOrCreateTournament(type);
 
-    let startsAt: Date;
-    let joinDeadline: Date;
-    let endsAt: Date;
-    let entryFee = 50;
+    let joined = false;
 
-    if (type === 'HOURLY') {
-      // ⚠️ если хочешь "каждый час активен" — тут лучше делать текущий час,
-      // но если твоя механика "вступление за 10 минут до старта" — тогда следующий час.
-      startsAt = new Date(now);
-      startsAt.setMinutes(0, 0, 0);
-      startsAt.setHours(startsAt.getHours() + 1);
-
-      joinDeadline = new Date(startsAt);
-      joinDeadline.setMinutes(10, 0, 0);
-
-      endsAt = new Date(startsAt);
-      endsAt.setMinutes(20, 0, 0);
-
-      entryFee = 50;
-    } else {
-      // ✅ DAILY: открыто весь день, вступать можно всегда
-      startsAt = this.floorToDay(now);
-
-      endsAt = new Date(startsAt);
-      endsAt.setDate(endsAt.getDate() + 1);
-      endsAt.setMilliseconds(-1); // 23:59:59.999
-
-      joinDeadline = endsAt; // ✅ весь день можно вступать
-      entryFee = 100;
+    if (token) {
+      try {
+        const userId = this.getUserIdFromToken(token);
+        const existing = await this.prisma.tournamentParticipant.findUnique({
+          where: {
+            userId_tournamentId: {
+              userId,
+              tournamentId: tournament.id,
+            },
+          },
+        });
+        joined = !!existing;
+      } catch {
+        // ignore invalid token
+      }
     }
 
-    let tournament = await this.prisma.tournament.findFirst({
-      where: { type, startsAt },
+    const participants = await this.prisma.tournamentParticipant.findMany({
+      where: { tournamentId: tournament.id },
+      include: { user: true },
+      orderBy: { score: 'desc' },
+      take: 20,
     });
 
-    if (!tournament) {
-      tournament = await this.prisma.tournament.create({
-        data: {
-          type,
-          startsAt,
-          joinDeadline,
-          endsAt,
-          entryFee,
-          status: 'ACTIVE',
-        },
-      });
-    }
-
-    return tournament;
+    return {
+      tournamentId: tournament.id, // ✅ ВАЖНО
+      type: tournament.type,
+      status: tournament.status,
+      startsAt: tournament.startsAt,
+      endsAt: tournament.endsAt,
+      entryFee: tournament.entryFee,
+      prizePool: tournament.prizePool,
+      joined, // ✅ ВАЖНО
+      participants: participants.map((p) => ({
+        userId: p.userId,
+        username: p.user.username ?? p.user.firstName ?? null,
+        score: p.score,
+      })),
+    };
   }
 }
