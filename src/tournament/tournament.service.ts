@@ -166,18 +166,17 @@ export class TournamentService {
       tournamentId: tournament.id,
     };
   }
-
   // ─────────────────────────────────────────────
-  // SUBMIT SCORE (HOURLY + DAILY)
+  // SUBMIT SCORE (HOURLY or DAILY)
   // ─────────────────────────────────────────────
   async submitScore(token: string, type: TournamentType, score: number) {
     const userId = this.getUserIdFromToken(token);
 
-    const hourly = await this.getOrCreateTournament('HOURLY');
-    const daily = await this.getOrCreateTournament('DAILY');
+    const tournament = await this.getOrCreateTournament(type);
 
-    await this.submitScoreInternal(userId, hourly.id, score);
-    await this.submitScoreInternal(userId, daily.id, score);
+    await this.submitScoreInternal(userId, tournament.id, score);
+
+    return { updated: true };
   }
 
   private async submitScoreInternal(

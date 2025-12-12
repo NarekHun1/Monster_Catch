@@ -14,6 +14,9 @@ import { TournamentType } from '@prisma/client';
 export class TournamentController {
   constructor(private readonly service: TournamentService) {}
 
+  // ─────────────────────────────────────
+  // JWT helper
+  // ─────────────────────────────────────
   private extractToken(authHeader?: string): string {
     if (!authHeader) {
       throw new BadRequestException('Missing Authorization header');
@@ -28,8 +31,8 @@ export class TournamentController {
   }
 
   // ─────────────────────────────────────
-  // ТЕКУЩИЙ ТУРНИР (HOURLY / DAILY)
-  // GET /tournament/current?type=HOURLY
+  // ТЕКУЩИЙ ТУРНИР + ЛИДЕРБОРД
+  // GET /tournament/current?type=HOURLY|DAILY
   // ─────────────────────────────────────
   @Get('current')
   async current(@Query('type') type?: TournamentType) {
@@ -61,7 +64,7 @@ export class TournamentController {
   // ─────────────────────────────────────
   // ОТПРАВКА СЧЁТА В ТУРНИР
   // POST /tournament/submit-score
-  // body: { type, score }
+  // body: { type: "HOURLY" | "DAILY", score: number }
   // ─────────────────────────────────────
   @Post('submit-score')
   async submitScore(
@@ -69,8 +72,11 @@ export class TournamentController {
     @Body('type') type?: TournamentType,
     @Body('score') score?: number,
   ) {
-    if (!type || typeof score !== 'number') {
-      throw new BadRequestException('Invalid payload');
+    if (!type) {
+      throw new BadRequestException('Tournament type is required');
+    }
+    if (typeof score !== 'number') {
+      throw new BadRequestException('Score must be a number');
     }
 
     const token = this.extractToken(auth);
