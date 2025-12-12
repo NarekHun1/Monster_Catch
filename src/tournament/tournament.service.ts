@@ -10,13 +10,13 @@ import * as jwt from 'jsonwebtoken';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectBot } from 'nestjs-telegraf';
 import { Telegraf } from 'telegraf';
-
+import { Prisma } from '@prisma/client';
 
 interface JwtPayload {
   userId: number;
 }
 
-type TournamentType = 'HOURLY' | 'DAILY';
+export type TournamentType = 'HOURLY' | 'DAILY';
 
 @Injectable()
 export class TournamentService {
@@ -73,7 +73,10 @@ export class TournamentService {
     let entryFee = 50;
 
     if (type === 'HOURLY') {
-      startsAt = this.floorToHour(now);
+      // 🔥 ВСЕГДА СЛЕДУЮЩИЙ ЧАС
+      startsAt = new Date(now);
+      startsAt.setMinutes(0, 0, 0);
+      startsAt.setHours(startsAt.getHours() + 1);
 
       joinDeadline = new Date(startsAt);
       joinDeadline.setMinutes(10, 0, 0);
@@ -81,14 +84,14 @@ export class TournamentService {
       endsAt = new Date(startsAt);
       endsAt.setMinutes(20, 0, 0);
     } else {
+      // DAILY
       startsAt = this.floorToDay(now);
 
       joinDeadline = new Date(startsAt);
-      joinDeadline.setHours(1, 0, 0);
+      joinDeadline.setDate(joinDeadline.getDate() + 1);
+      joinDeadline.setMilliseconds(-1); // = 23:59:59
 
-      endsAt = new Date(startsAt);
-      endsAt.setHours(23, 59, 59, 999);
-
+      endsAt = new Date(joinDeadline);
       entryFee = 100;
     }
 
@@ -105,6 +108,7 @@ export class TournamentService {
           endsAt,
           entryFee,
           status: 'ACTIVE',
+          prizePool: 0,
         },
       });
     }
@@ -157,7 +161,11 @@ export class TournamentService {
         data: { prizePool: { increment: tournament.entryFee } },
       }),
       this.prisma.tournamentParticipant.create({
-        data: { userId, tournamentId: tournament.id },
+        data: {
+          userId,
+          tournamentId: tournament.id,
+          score: 0,
+        },
       }),
     ]);
 
@@ -167,54 +175,52 @@ export class TournamentService {
       tournamentId: tournament.id,
     };
   }
+
   // ─────────────────────────────────────────────
-  // SUBMIT SCORE (HOURLY or DAILY)
+  // SUBMIT SCORE (ONLY ONCE)
   // ─────────────────────────────────────────────
   async submitScore(token: string, type: TournamentType, score: number) {
     const userId = this.getUserIdFromToken(token);
-
     const tournament = await this.getOrCreateTournament(type);
 
-    await this.submitScoreInternal(userId, tournament.id, score);
-
-    return { updated: true };
-  }
-
-  private async submitScoreInternal(
-    userId: number,
-    tournamentId: number,
-    score: number,
-  ) {
     const participant = await this.prisma.tournamentParticipant.findUnique({
       where: {
-        userId_tournamentId: { userId, tournamentId },
+        userId_tournamentId: {
+          userId,
+          tournamentId: tournament.id,
+        },
       },
     });
 
-    if (!participant) return;
+    if (!participant) return { updated: false };
 
-    if (participant.score > 0) {
-      return; // ❌ уже отправлял результат
+    if (participant.score !== 0) {
+      return { updated: false }; // ❌ уже отправлял
     }
 
     await this.prisma.tournamentParticipant.update({
       where: { id: participant.id },
       data: { score },
     });
+
+    return { updated: true };
   }
 
   // ─────────────────────────────────────────────
-  // CRON: FINISH TOURNAMENTS
+  // CRON — FINISH TOURNAMENTS
   // ─────────────────────────────────────────────
   @Cron(CronExpression.EVERY_MINUTE)
   async handleFinishCron() {
-    const finished = await this.finishExpiredTournaments();
-    if (finished.length) {
-      this.logger.log(`Finished ${finished.length} tournaments`);
+    const finishedCount = await this.finishExpiredTournaments();
+    if (finishedCount > 0) {
+      this.logger.log(`Finished ${finishedCount} tournaments`);
     }
   }
 
-  async finishExpiredTournaments() {
+  // ─────────────────────────────────────────────
+  // FINISH LOGIC
+  // ─────────────────────────────────────────────
+  async finishExpiredTournaments(): Promise<number> {
     const now = new Date();
 
     const tournaments = await this.prisma.tournament.findMany({
@@ -236,80 +242,60 @@ export class TournamentService {
       const prizePool = t.prizePool;
       const entryFee = t.entryFee;
 
-      const tx: any[] = [];
+      const tx: Prisma.PrismaPromise<any>[] = [];
+      const prizes: number[] = [];
 
-      // 🧍‍♂️ 1 игрок — вернуть деньги
+      // 1 игрок — возврат
       if (count === 1) {
+        prizes.push(entryFee);
         tx.push(
           this.prisma.user.update({
             where: { id: participants[0].userId },
             data: { coins: { increment: entryFee } },
           }),
         );
-
-        await this.prisma.$transaction([
-          ...tx,
-          this.prisma.tournament.update({
-            where: { id: t.id },
-            data: { status: 'FINISHED' },
-          }),
-        ]);
-
-        continue;
       }
 
-      // 👥 2–3 игрока — только 1 место = 50 монет
-      if (count === 2 || count === 3) {
+      // 2–3 игрока — 50 первому
+      else if (count === 2 || count === 3) {
+        prizes.push(50);
         tx.push(
           this.prisma.user.update({
             where: { id: participants[0].userId },
             data: { coins: { increment: 50 } },
           }),
         );
-
-        await this.prisma.$transaction([
-          ...tx,
-          this.prisma.tournament.update({
-            where: { id: t.id },
-            data: { status: 'FINISHED' },
-          }),
-        ]);
-
-        continue;
       }
 
-      // 👥 4+ игроков — полноценные призы
-      const p1 = participants[0];
-      const p2 = participants[1];
-      const p3 = participants[2];
+      // 4+ игроков — 40% / 50 / 50
+      else {
+        prizes.push(
+          Math.floor(prizePool * 0.4),
+          50,
+          50,
+        );
 
-      const prizes = [
-        Math.floor(prizePool * 0.4), // 1 место
-        50, // 2 место
-        50, // 3 место
-      ];
-
-      [p1, p2, p3].forEach((p, i) => {
-        if (p && prizes[i] > 0) {
+        participants.slice(0, 3).forEach((p, i) => {
           tx.push(
             this.prisma.user.update({
               where: { id: p.userId },
               data: { coins: { increment: prizes[i] } },
             }),
           );
-        }
-      });
+        });
+      }
 
-      await this.prisma.$transaction([
-        ...tx,
+      tx.push(
         this.prisma.tournament.update({
           where: { id: t.id },
           data: { status: 'FINISHED' },
         }),
-      ]);
+      );
 
-      // 📩 Telegram уведомления (опционально)
-      for (let i = 0; i < 3; i++) {
+      await this.prisma.$transaction(tx);
+
+      // 📩 Telegram notify
+      for (let i = 0; i < prizes.length && i < participants.length; i++) {
         const p = participants[i];
         if (!p?.user?.telegramId) continue;
 
@@ -326,7 +312,7 @@ export class TournamentService {
   }
 
   // ─────────────────────────────────────────────
-  // LEADERBOARD
+  // CURRENT / LEADERBOARD
   // ─────────────────────────────────────────────
   async getCurrentTournament(type: TournamentType, token?: string) {
     const tournament = await this.getOrCreateTournament(type);
@@ -345,9 +331,7 @@ export class TournamentService {
           },
         });
         joined = !!existing;
-      } catch {
-        // ignore invalid token
-      }
+      } catch {}
     }
 
     const participants = await this.prisma.tournamentParticipant.findMany({
@@ -358,14 +342,15 @@ export class TournamentService {
     });
 
     return {
-      tournamentId: tournament.id, // ✅ ВАЖНО
+      tournamentId: tournament.id,
       type: tournament.type,
       status: tournament.status,
       startsAt: tournament.startsAt,
       endsAt: tournament.endsAt,
+      joinDeadline: tournament.joinDeadline,
       entryFee: tournament.entryFee,
       prizePool: tournament.prizePool,
-      joined, // ✅ ВАЖНО
+      joined,
       participants: participants.map((p) => ({
         userId: p.userId,
         username: p.user.username ?? p.user.firstName ?? null,
