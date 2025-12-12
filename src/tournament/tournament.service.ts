@@ -73,25 +73,22 @@ export class TournamentService {
     let entryFee = 50;
 
     if (type === 'HOURLY') {
-      // 🔥 ВСЕГДА СЛЕДУЮЩИЙ ЧАС
-      startsAt = new Date(now);
-      startsAt.setMinutes(0, 0, 0);
-      startsAt.setHours(startsAt.getHours() + 1);
+      // ✅ ТЕКУЩИЙ ЧАС
+      startsAt = this.floorToHour(now);
 
       joinDeadline = new Date(startsAt);
-      joinDeadline.setMinutes(10, 0, 0);
+      joinDeadline.setMinutes(10, 0, 0); // вход 10 мин
 
       endsAt = new Date(startsAt);
-      endsAt.setMinutes(20, 0, 0);
+      endsAt.setMinutes(20, 0, 0); // игра 20 мин
     } else {
-      // DAILY
+      // ✅ DAILY — ВЕСЬ ДЕНЬ
       startsAt = this.floorToDay(now);
 
-      joinDeadline = new Date(startsAt);
-      joinDeadline.setDate(joinDeadline.getDate() + 1);
-      joinDeadline.setMilliseconds(-1); // = 23:59:59
+      endsAt = new Date(startsAt);
+      endsAt.setHours(23, 59, 59, 999);
 
-      endsAt = new Date(joinDeadline);
+      joinDeadline = endsAt; // 🔥 вход весь день
       entryFee = 100;
     }
 
@@ -130,7 +127,12 @@ export class TournamentService {
 
     const tournament = await this.getOrCreateTournament(type);
 
-    if (now > tournament.joinDeadline || tournament.status === 'FINISHED') {
+    if (tournament.status === 'FINISHED') {
+      throw new BadRequestException('Tournament finished');
+    }
+
+    // ⏱ ограничение ТОЛЬКО для почасового
+    if (type === 'HOURLY' && now > tournament.joinDeadline) {
       throw new BadRequestException('Join window closed');
     }
 
@@ -269,11 +271,7 @@ export class TournamentService {
 
       // 4+ игроков — 40% / 50 / 50
       else {
-        prizes.push(
-          Math.floor(prizePool * 0.4),
-          50,
-          50,
-        );
+        prizes.push(Math.floor(prizePool * 0.4), 50, 50);
 
         participants.slice(0, 3).forEach((p, i) => {
           tx.push(
