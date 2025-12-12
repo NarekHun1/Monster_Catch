@@ -192,12 +192,15 @@ export class TournamentService {
 
     if (!participant) return;
 
-    if (score > participant.score) {
-      await this.prisma.tournamentParticipant.update({
-        where: { id: participant.id },
-        data: { score },
-      });
+    if (participant.score > 0) {
+      return; // ❌ уже отправлял результат
     }
+
+    await this.prisma.tournamentParticipant.update({
+      where: { id: participant.id },
+      data: { score },
+    });
+
   }
 
   // ─────────────────────────────────────────────
