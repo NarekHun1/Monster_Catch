@@ -286,22 +286,9 @@ export class TournamentService {
     let endsAt: Date;
     let entryFee = 50;
 
-    if (type === 'DAILY') {
-      // 🕛 начало сегодняшнего дня
-      startsAt = this.floorToDay(now);
-
-      // 🟢 вступать можно ВСЁ ВРЕМЯ
-      joinDeadline = new Date(startsAt);
-      joinDeadline.setDate(joinDeadline.getDate() + 1);
-      joinDeadline.setMilliseconds(-1); // = endsAt
-
-      endsAt = new Date(joinDeadline);
-
-      entryFee = 100;
-    }
-
     if (type === 'HOURLY') {
-      // ✅ ВСЕГДА СЛЕДУЮЩИЙ ЧАС
+      // ⚠️ если хочешь "каждый час активен" — тут лучше делать текущий час,
+      // но если твоя механика "вступление за 10 минут до старта" — тогда следующий час.
       startsAt = new Date(now);
       startsAt.setMinutes(0, 0, 0);
       startsAt.setHours(startsAt.getHours() + 1);
@@ -311,16 +298,17 @@ export class TournamentService {
 
       endsAt = new Date(startsAt);
       endsAt.setMinutes(20, 0, 0);
+
+      entryFee = 50;
     } else {
-      // DAILY — можно оставить как есть
+      // ✅ DAILY: открыто весь день, вступать можно всегда
       startsAt = this.floorToDay(now);
 
-      joinDeadline = new Date(startsAt);
-      joinDeadline.setHours(1, 0, 0);
-
       endsAt = new Date(startsAt);
-      endsAt.setHours(23, 59, 59, 999);
+      endsAt.setDate(endsAt.getDate() + 1);
+      endsAt.setMilliseconds(-1); // 23:59:59.999
 
+      joinDeadline = endsAt; // ✅ весь день можно вступать
       entryFee = 100;
     }
 
