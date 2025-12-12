@@ -279,27 +279,55 @@ export class TournamentService {
   // LEADERBOARD
   // ─────────────────────────────────────────────
   async getCurrentLeaderboard(type: TournamentType) {
-    const t = await this.getOrCreateTournament(type);
+    const now = new Date();
 
-    const participants = await this.prisma.tournamentParticipant.findMany({
-      where: { tournamentId: t.id },
-      include: { user: true },
-      orderBy: { score: 'desc' },
-      take: 20,
+    let startsAt: Date;
+    let joinDeadline: Date;
+    let endsAt: Date;
+    let entryFee = 50;
+
+    if (type === 'HOURLY') {
+      // ✅ ВСЕГДА СЛЕДУЮЩИЙ ЧАС
+      startsAt = new Date(now);
+      startsAt.setMinutes(0, 0, 0);
+      startsAt.setHours(startsAt.getHours() + 1);
+
+      joinDeadline = new Date(startsAt);
+      joinDeadline.setMinutes(10, 0, 0);
+
+      endsAt = new Date(startsAt);
+      endsAt.setMinutes(20, 0, 0);
+    } else {
+      // DAILY — можно оставить как есть
+      startsAt = this.floorToDay(now);
+
+      joinDeadline = new Date(startsAt);
+      joinDeadline.setHours(1, 0, 0);
+
+      endsAt = new Date(startsAt);
+      endsAt.setHours(23, 59, 59, 999);
+
+      entryFee = 100;
+    }
+
+    let tournament = await this.prisma.tournament.findFirst({
+      where: { type, startsAt },
     });
 
-    return {
-      tournamentId: t.id,
-      type,
-      endsAt: t.endsAt,
-      entryFee: t.entryFee,
-      joinDeadline: t.joinDeadline,
-      prizePool: t.prizePool,
-      participants: participants.map((p) => ({
-        userId: p.userId,
-        username: p.user.username ?? p.user.firstName ?? null,
-        score: p.score,
-      })),
-    };
+    if (!tournament) {
+      tournament = await this.prisma.tournament.create({
+        data: {
+          type,
+          startsAt,
+          joinDeadline,
+          endsAt,
+          entryFee,
+          status: 'ACTIVE',
+        },
+      });
+    }
+
+    return tournament;
   }
+
 }
