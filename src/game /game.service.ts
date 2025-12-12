@@ -263,7 +263,7 @@ export class GameService {
 
   private getXpForNextLevel(level: number): number {
     // простая формула: чем выше уровень, тем больше нужно XP
-    return 100 + (level - 1) * 50;
+    return 100 + (level - 1) * 500;
   }
 
   async getDailyQuests(token: string) {
