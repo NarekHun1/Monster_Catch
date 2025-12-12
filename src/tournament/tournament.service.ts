@@ -286,6 +286,20 @@ export class TournamentService {
     let endsAt: Date;
     let entryFee = 50;
 
+    if (type === 'DAILY') {
+      // 🕛 начало сегодняшнего дня
+      startsAt = this.floorToDay(now);
+
+      // 🟢 вступать можно ВСЁ ВРЕМЯ
+      joinDeadline = new Date(startsAt);
+      joinDeadline.setDate(joinDeadline.getDate() + 1);
+      joinDeadline.setMilliseconds(-1); // = endsAt
+
+      endsAt = new Date(joinDeadline);
+
+      entryFee = 100;
+    }
+
     if (type === 'HOURLY') {
       // ✅ ВСЕГДА СЛЕДУЮЩИЙ ЧАС
       startsAt = new Date(now);
@@ -329,5 +343,4 @@ export class TournamentService {
 
     return tournament;
   }
-
 }
