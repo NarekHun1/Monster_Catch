@@ -11,6 +11,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectBot } from 'nestjs-telegraf';
 import { Telegraf } from 'telegraf';
 
+
 interface JwtPayload {
   userId: number;
 }
@@ -200,7 +201,6 @@ export class TournamentService {
       where: { id: participant.id },
       data: { score },
     });
-
   }
 
   // ─────────────────────────────────────────────
@@ -219,7 +219,7 @@ export class TournamentService {
 
     const tournaments = await this.prisma.tournament.findMany({
       where: {
-        status: { in: ['PLANNED', 'ACTIVE'] },
+        status: 'ACTIVE',
         endsAt: { lte: now },
       },
       include: {
@@ -228,15 +228,66 @@ export class TournamentService {
     });
 
     for (const t of tournaments) {
-      const sorted = [...t.participants].sort((a, b) => b.score - a.score);
-      const [p1, p2, p3] = sorted;
+      const participants = [...t.participants].sort(
+        (a, b) => b.score - a.score,
+      );
 
-      const pool = t.prizePool;
-      const fee = t.entryFee;
-
-      const prizes = [p1 && Math.floor(pool * 0.4), p2 && fee, p3 && fee];
+      const count = participants.length;
+      const prizePool = t.prizePool;
+      const entryFee = t.entryFee;
 
       const tx: any[] = [];
+
+      // 🧍‍♂️ 1 игрок — вернуть деньги
+      if (count === 1) {
+        tx.push(
+          this.prisma.user.update({
+            where: { id: participants[0].userId },
+            data: { coins: { increment: entryFee } },
+          }),
+        );
+
+        await this.prisma.$transaction([
+          ...tx,
+          this.prisma.tournament.update({
+            where: { id: t.id },
+            data: { status: 'FINISHED' },
+          }),
+        ]);
+
+        continue;
+      }
+
+      // 👥 2–3 игрока — только 1 место = 50 монет
+      if (count === 2 || count === 3) {
+        tx.push(
+          this.prisma.user.update({
+            where: { id: participants[0].userId },
+            data: { coins: { increment: 50 } },
+          }),
+        );
+
+        await this.prisma.$transaction([
+          ...tx,
+          this.prisma.tournament.update({
+            where: { id: t.id },
+            data: { status: 'FINISHED' },
+          }),
+        ]);
+
+        continue;
+      }
+
+      // 👥 4+ игроков — полноценные призы
+      const p1 = participants[0];
+      const p2 = participants[1];
+      const p3 = participants[2];
+
+      const prizes = [
+        Math.floor(prizePool * 0.4), // 1 место
+        50, // 2 место
+        50, // 3 место
+      ];
 
       [p1, p2, p3].forEach((p, i) => {
         if (p && prizes[i] > 0) {
@@ -257,25 +308,21 @@ export class TournamentService {
         }),
       ]);
 
-      // Telegram notify
+      // 📩 Telegram уведомления (опционально)
       for (let i = 0; i < 3; i++) {
-        const p = sorted[i];
+        const p = participants[i];
         if (!p?.user?.telegramId) continue;
 
-        try {
-          await this.bot.telegram.sendMessage(
-            Number(p.user.telegramId),
-            `🏆 Турнир завершён!\n\nМесто: ${i + 1}\nОчки: ${
-              p.score
-            }\nНаграда: ${prizes[i]} 🪙`,
-          );
-        } catch {
-          this.logger.warn(`Notify failed user ${p.userId}`);
-        }
+        await this.bot.telegram.sendMessage(
+          Number(p.user.telegramId),
+          `🏆 Турнир завершён!\n\nМесто: ${i + 1}\nОчки: ${
+            p.score
+          }\nНаграда: ${prizes[i]} 🪙`,
+        );
       }
     }
 
-    return tournaments;
+    return tournaments.length;
   }
 
   // ─────────────────────────────────────────────
