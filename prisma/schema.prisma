@@ -70,15 +70,15 @@ model Referral {
 }
 
 model Tournament {
-  id           Int              @id @default(autoincrement())
+  id           Int                     @id @default(autoincrement())
   startsAt     DateTime
   endsAt       DateTime
   joinDeadline DateTime
   entryFee     Int
-  prizePool    Int              @default(0)
-  status       TournamentStatus @default(PLANNED)
-  createdAt    DateTime         @default(now())
-
+  prizePool    Int                     @default(0)
+  status       TournamentStatus        @default(PLANNED)
+  createdAt    DateTime                @default(now())
+  type         TournamentType
   participants TournamentParticipant[]
 }
 
@@ -139,4 +139,9 @@ enum TournamentStatus {
   PLANNED
   ACTIVE
   FINISHED
+}
+
+enum TournamentType {
+  HOURLY
+  DAILY
 }

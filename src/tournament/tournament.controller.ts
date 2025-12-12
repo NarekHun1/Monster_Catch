@@ -4,51 +4,83 @@ import {
   Post,
   Body,
   Headers,
+  Query,
   BadRequestException,
 } from '@nestjs/common';
 import { TournamentService } from './tournament.service';
+import { TournamentType } from '@prisma/client';
 
 @Controller('tournament')
 export class TournamentController {
   constructor(private readonly service: TournamentService) {}
 
   private extractToken(authHeader?: string): string {
-    if (!authHeader) throw new Error('Missing Authorization');
+    if (!authHeader) {
+      throw new BadRequestException('Missing Authorization header');
+    }
+
     const [type, token] = authHeader.split(' ');
-    if (type !== 'Bearer' || !token) throw new Error('Invalid Authorization');
+    if (type !== 'Bearer' || !token) {
+      throw new BadRequestException('Invalid Authorization header');
+    }
+
     return token;
   }
 
+  // ─────────────────────────────────────
+  // ТЕКУЩИЙ ТУРНИР (HOURLY / DAILY)
+  // GET /tournament/current?type=HOURLY
+  // ─────────────────────────────────────
   @Get('current')
-  async current() {
-    return this.service.getCurrentLeaderboard();
+  async current(@Query('type') type?: TournamentType) {
+    if (!type) {
+      throw new BadRequestException('Tournament type is required');
+    }
+
+    return this.service.getCurrentLeaderboard(type);
   }
 
+  // ─────────────────────────────────────
+  // ВСТУПЛЕНИЕ В ТУРНИР
+  // POST /tournament/join
+  // body: { type: "HOURLY" | "DAILY" }
+  // ─────────────────────────────────────
   @Post('join')
-  async join(@Headers('authorization') auth?: string) {
+  async join(
+    @Headers('authorization') auth?: string,
+    @Body('type') type?: TournamentType,
+  ) {
+    if (!type) {
+      throw new BadRequestException('Tournament type is required');
+    }
+
     const token = this.extractToken(auth);
-    return this.service.join(token);
+    return this.service.join(token, type);
   }
 
+  // ─────────────────────────────────────
+  // ОТПРАВКА СЧЁТА В ТУРНИР
+  // POST /tournament/submit-score
+  // body: { type, score }
+  // ─────────────────────────────────────
   @Post('submit-score')
   async submitScore(
     @Headers('authorization') auth?: string,
-    @Body() body?: { tournamentId: number; score: number },
+    @Body('type') type?: TournamentType,
+    @Body('score') score?: number,
   ) {
-    const token = this.extractToken(auth);
-
-    if (!body) {
-      throw new BadRequestException('Missing body');
-    }
-    if (body.tournamentId == null || body.score == null) {
+    if (!type || typeof score !== 'number') {
       throw new BadRequestException('Invalid payload');
-
     }
 
-    return this.service.submitScore(token, body.tournamentId, body.score);
+    const token = this.extractToken(auth);
+    return this.service.submitScore(token, type, score);
   }
 
-  // можно дергать кроном: POST /tournament/finish-expired
+  // ─────────────────────────────────────
+  // ЗАВЕРШЕНИЕ ТУРНИРОВ (cron / manual)
+  // POST /tournament/finish-expired
+  // ─────────────────────────────────────
   @Post('finish-expired')
   async finishExpired() {
     return this.service.finishExpiredTournaments();
