@@ -292,6 +292,8 @@ export class TournamentService {
       tournamentId: t.id,
       type,
       endsAt: t.endsAt,
+      entryFee: t.entryFee,
+      joinDeadline: t.joinDeadline,
       prizePool: t.prizePool,
       participants: participants.map((p) => ({
         userId: p.userId,
