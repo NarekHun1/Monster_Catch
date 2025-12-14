@@ -16,14 +16,14 @@ export class TicketsController {
   ) {}
 
   @Get('count')
-  count(@Req() req: any) {
+  async count(@Req() req: any) {
     const authHeader = req.headers.authorization;
     const token = authHeader?.replace('Bearer ', '');
     const userId = this.authService.getUserIdFromToken(token);
 
-    console.log('🎟 COUNT FOR USER ID:', userId);
+    const count = await this.ticketsService.getTicketsCount(userId);
 
-    return this.ticketsService.getTicketsCount(userId);
+    return { count };
   }
 
   @Post('exchange-stars')
