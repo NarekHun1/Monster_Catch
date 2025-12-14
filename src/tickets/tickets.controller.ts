@@ -21,6 +21,8 @@ export class TicketsController {
     const token = authHeader?.replace('Bearer ', '');
     const userId = this.authService.getUserIdFromToken(token);
 
+    console.log('🎟 COUNT FOR USER ID:', userId);
+
     return this.ticketsService.getTicketsCount(userId);
   }
 
