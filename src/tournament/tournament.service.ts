@@ -123,7 +123,9 @@ export class TournamentService {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
     });
-    if (!user) throw new UnauthorizedException('User not found');
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
 
     const tournament = await this.getOrCreateTournament(type);
 
@@ -136,10 +138,7 @@ export class TournamentService {
       throw new BadRequestException('Join window closed');
     }
 
-    if (user.coins < tournament.entryFee) {
-      throw new BadRequestException('Not enough coins');
-    }
-
+    // ❌ уже участвует
     const existing = await this.prisma.tournamentParticipant.findUnique({
       where: {
         userId_tournamentId: {
@@ -153,15 +152,73 @@ export class TournamentService {
       return { joined: false, tournamentId: tournament.id };
     }
 
-    const [updatedUser] = await this.prisma.$transaction([
-      this.prisma.user.update({
-        where: { id: userId },
-        data: { coins: { decrement: tournament.entryFee } },
-      }),
-      this.prisma.tournament.update({
-        where: { id: tournament.id },
-        data: { prizePool: { increment: tournament.entryFee } },
-      }),
+    // ─────────────────────────────────────
+    // 💰 ПРАВИЛА ОПЛАТЫ
+    // ─────────────────────────────────────
+    const TICKET_COST = 50;
+    const COIN_COST = 50;
+
+    // 🎟 берём 50 билетов
+    const tickets = await this.prisma.ticket.findMany({
+      where: {
+        userId,
+        usedAt: null,
+      },
+      select: { id: true },
+      take: TICKET_COST,
+    });
+
+    let paymentType: 'TICKETS' | 'COINS';
+
+    if (tickets.length === TICKET_COST) {
+      paymentType = 'TICKETS';
+    } else if (user.coins >= COIN_COST) {
+      paymentType = 'COINS';
+    } else {
+      throw new BadRequestException(
+        'Need 50 tickets or 50 coins to join tournament',
+      );
+    }
+
+    // ─────────────────────────────────────
+    // 🔥 ТРАНЗАКЦИЯ
+    // ─────────────────────────────────────
+    const tx: Prisma.PrismaPromise<any>[] = [];
+
+    // 🎟 списываем 50 билетов
+    if (paymentType === 'TICKETS') {
+      tx.push(
+        this.prisma.ticket.updateMany({
+          where: {
+            id: { in: tickets.map((t) => t.id) },
+          },
+          data: {
+            usedAt: new Date(),
+          },
+        }),
+      );
+    }
+
+    // 🪙 списываем 50 монет
+    if (paymentType === 'COINS') {
+      tx.push(
+        this.prisma.user.update({
+          where: { id: userId },
+          data: { coins: { decrement: COIN_COST } },
+        }),
+      );
+
+      // 💰 prizePool увеличивается ТОЛЬКО от монет
+      tx.push(
+        this.prisma.tournament.update({
+          where: { id: tournament.id },
+          data: { prizePool: { increment: COIN_COST } },
+        }),
+      );
+    }
+
+    // 👤 добавляем участника
+    tx.push(
       this.prisma.tournamentParticipant.create({
         data: {
           userId,
@@ -169,12 +226,14 @@ export class TournamentService {
           score: 0,
         },
       }),
-    ]);
+    );
+
+    await this.prisma.$transaction(tx);
 
     return {
       joined: true,
-      coins: updatedUser.coins,
       tournamentId: tournament.id,
+      paymentType,
     };
   }
 
