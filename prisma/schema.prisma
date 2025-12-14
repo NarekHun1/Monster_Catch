@@ -33,6 +33,8 @@ model User {
   referralsSent         Referral[]              @relation("UserInviter")
   tournaments           TournamentParticipant[]
   withdrawals           Withdrawal[]
+  Ticket                Ticket[]
+  StarExchange          StarExchange[]
 }
 
 model Game {
@@ -109,6 +111,34 @@ model Withdrawal {
   createdAt   DateTime         @default(now())
   processedAt DateTime?
   user        User             @relation(fields: [userId], references: [id])
+}
+
+model StarExchange {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  stars     Int
+  ticketId  Int
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id])
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+}
+
+model Ticket {
+  id        Int        @id @default(autoincrement())
+  userId    Int
+  type      TicketType
+  createdAt DateTime   @default(now())
+  usedAt    DateTime?
+
+  user         User           @relation(fields: [userId], references: [id])
+  StarExchange StarExchange[]
+
+  @@index([userId, type])
+}
+
+enum TicketType {
+  TOURNAMENT
 }
 
 enum WithdrawalStatus {

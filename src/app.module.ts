@@ -13,6 +13,7 @@ import { TournamentModule } from './tournament/tournament.module';
 import { PaymentModule } from './payments/payments.module';
 import { NotificationModule } from './notification/notification.module';
 import { WalletModule } from './wallet/wallet.module';
+import { TicketsModule } from './tickets/tickets.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -29,6 +30,7 @@ import { WalletModule } from './wallet/wallet.module';
     PaymentModule,
     NotificationModule,
     WalletModule,
+    TicketsModule,
   ],
 })
 export class AppModule {}
