@@ -1,4 +1,10 @@
-import { Controller, Post, Req, UnauthorizedException } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Req,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { TicketsService } from './tickets.service';
 import { AuthService } from '../auth/auth.service';
 
@@ -8,6 +14,15 @@ export class TicketsController {
     private readonly ticketsService: TicketsService,
     private readonly authService: AuthService,
   ) {}
+
+  @Get('count')
+  count(@Req() req: any) {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.replace('Bearer ', '');
+    const userId = this.authService.getUserIdFromToken(token);
+
+    return this.ticketsService.getTicketsCount(userId);
+  }
 
   @Post('exchange-stars')
   exchangeStars(@Req() req: any) {

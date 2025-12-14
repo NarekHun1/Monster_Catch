@@ -7,6 +7,15 @@ export class TicketsService {
 
   constructor(private prisma: PrismaService) {}
 
+  async getTicketsCount(userId: number) {
+    return this.prisma.ticket.count({
+      where: {
+        userId,
+        usedAt: null,
+      },
+    });
+  }
+
   async exchangeStars(userId: number) {
     return this.prisma.$transaction(async (tx) => {
       const user = await tx.user.findUnique({
