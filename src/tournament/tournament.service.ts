@@ -356,10 +356,15 @@ export class TournamentService {
     const tournament = await this.getOrCreateTournament(type);
 
     let joined = false;
+    let coins = 0;
+    let ticketsCount = 0;
+
+    let userId: number | null = null;
 
     if (token) {
       try {
-        const userId = this.getUserIdFromToken(token);
+        userId = this.getUserIdFromToken(token);
+
         const existing = await this.prisma.tournamentParticipant.findUnique({
           where: {
             userId_tournamentId: {
@@ -368,8 +373,25 @@ export class TournamentService {
             },
           },
         });
+
         joined = !!existing;
-      } catch {}
+
+        const user = await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { coins: true },
+        });
+
+        coins = user?.coins ?? 0;
+
+        ticketsCount = await this.prisma.ticket.count({
+          where: {
+            userId,
+            usedAt: null,
+          },
+        });
+      } catch {
+        // токен невалидный — просто считаем как гость
+      }
     }
 
     const participants = await this.prisma.tournamentParticipant.findMany({
@@ -388,7 +410,13 @@ export class TournamentService {
       joinDeadline: tournament.joinDeadline,
       entryFee: tournament.entryFee,
       prizePool: tournament.prizePool,
+
+      // 👤 META ДЛЯ ТЕКУЩЕГО ПОЛЬЗОВАТЕЛЯ
       joined,
+      coins,
+      ticketsCount,
+
+      // 🏆 УЧАСТНИКИ
       participants: participants.map((p) => ({
         userId: p.userId,
         username: p.user.username ?? p.user.firstName ?? null,
@@ -396,4 +424,5 @@ export class TournamentService {
       })),
     };
   }
+
 }
