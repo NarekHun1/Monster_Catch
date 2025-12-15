@@ -16,16 +16,13 @@ export class AuthService {
     private readonly config: ConfigService,
   ) {}
 
+  // ─────────────────────────────────────────────
+  // TELEGRAM LOGIN
+  // ─────────────────────────────────────────────
   async login(initData: string): Promise<{ token: string; user: User }> {
     const botToken = this.config.getOrThrow<string>('TELEGRAM_BOT_TOKEN');
 
-    console.log('--- AUTH /telegram ---');
-    console.log('BOT TOKEN starts with:', botToken.slice(0, 10));
-    console.log('INIT DATA RAW:', initData);
-
     const ok = verifyTelegramInitData(initData, botToken);
-    console.log('VERIFY RESULT:', ok);
-
     if (!ok) {
       throw new UnauthorizedException('Invalid Telegram initData');
     }
@@ -53,14 +50,21 @@ export class AuthService {
     });
 
     const jwtSecret = this.config.getOrThrow<string>('JWT_SECRET');
-    const token = jwt.sign({ userId: user.id }, jwtSecret, {
-      expiresIn: '7d',
-    });
+
+    const token = jwt.sign(
+      { userId: user.id },
+      jwtSecret,
+      { expiresIn: '7d' },
+    );
 
     return { token, user };
   }
-  getUserIdFromToken(token: string): number {
-    if (!token) {
+
+  // ─────────────────────────────────────────────
+  // JWT PARSE
+  // ─────────────────────────────────────────────
+  getUserIdFromToken(authHeader: string): number {
+    if (!authHeader) {
       throw new UnauthorizedException('TOKEN_MISSING');
     }
 
@@ -68,6 +72,11 @@ export class AuthService {
     if (!secret) {
       throw new UnauthorizedException('JWT_SECRET missing');
     }
+
+    // ✅ ОБРЕЗАЕМ Bearer
+    const token = authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7)
+      : authHeader;
 
     try {
       const payload = jwt.verify(token, secret) as JwtPayload;
@@ -78,9 +87,12 @@ export class AuthService {
 
       return payload.userId;
     } catch (err: any) {
-      if (err.name === 'TokenExpiredError') {
+      console.warn('JWT VERIFY ERROR:', err?.name, err?.message);
+
+      if (err?.name === 'TokenExpiredError') {
         throw new UnauthorizedException('TOKEN_EXPIRED');
       }
+
       throw new UnauthorizedException('INVALID_TOKEN');
     }
   }
