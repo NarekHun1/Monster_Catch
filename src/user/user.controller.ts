@@ -4,6 +4,7 @@ import {
   Headers,
   Post,
   BadRequestException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { UserService } from './user.service';
 import { ConfigService } from '@nestjs/config';
@@ -23,12 +24,26 @@ export class UserController {
 
   private getUserIdFromToken(authHeader?: string): number {
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new Error('Missing or invalid Authorization header');
+      throw new UnauthorizedException('Missing Authorization header');
     }
+
     const token = authHeader.slice(7);
     const secret = this.config.get<string>('JWT_SECRET');
-    const payload = jwt.verify(token, secret!) as JwtPayload;
-    return payload.userId;
+
+    if (!secret) {
+      throw new Error('JWT_SECRET is not set');
+    }
+
+    try {
+      const payload = jwt.verify(token, secret) as JwtPayload;
+      return payload.userId;
+    } catch (err: any) {
+      if (err.name === 'TokenExpiredError') {
+        throw new UnauthorizedException('JWT expired');
+      }
+
+      throw new UnauthorizedException('Invalid JWT');
+    }
   }
 
   @Get('me')
