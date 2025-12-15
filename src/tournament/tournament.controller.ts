@@ -55,16 +55,12 @@ export class TournamentController {
   // body: { type: "HOURLY" | "DAILY" }
   // ─────────────────────────────────────
   @Post('join')
-  async join(
-    @Headers('authorization') auth?: string,
-    @Body('type') type?: TournamentType,
+  join(
+    @Headers('authorization') auth: string,
+    @Body() body: { type: TournamentType; entry: 'TICKET' | 'COINS' },
   ) {
-    if (!type) {
-      throw new BadRequestException('Tournament type is required');
-    }
-
-    const token = this.extractToken(auth);
-    return this.service.join(token, type);
+    const token = auth.replace('Bearer ', '');
+    return this.service.join(token, body.type, body.entry);
   }
 
   // ─────────────────────────────────────
