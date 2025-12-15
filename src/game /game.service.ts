@@ -123,14 +123,14 @@ export class GameService {
   async finishGame(
     token: string,
     gameId: number,
-    score: number,
+    score: number, // client score (ТОЛЬКО ДЛЯ UI)
     clicks: number,
     epicCount: number,
   ) {
     const userId = this.getUserIdFromToken(token);
 
     // ─────────────────────────────────────
-    // 0️⃣ USER + BLOCK CHECK (ВСЕГДА ПЕРВЫМ)
+    // 0️⃣ USER + BLOCK CHECK
     // ─────────────────────────────────────
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -149,7 +149,7 @@ export class GameService {
     if (user.isBlocked) throw new ForbiddenException('User is blocked');
 
     // ─────────────────────────────────────
-    // 1️⃣ BASIC PAYLOAD VALIDATION
+    // 1️⃣ BASIC VALIDATION
     // ─────────────────────────────────────
     if (!gameId || Number.isNaN(gameId)) {
       throw new BadRequestException('Invalid gameId');
@@ -200,7 +200,7 @@ export class GameService {
     }
 
     // ─────────────────────────────────────
-    // 4️⃣ GAME LIMITS (ТВОИ ЦИФРЫ)
+    // 4️⃣ GAME LIMITS
     // ─────────────────────────────────────
     const MAX_TOTAL_CLICKS = 500;
     const MAX_EPIC_TOTAL = 50;
@@ -221,28 +221,9 @@ export class GameService {
     }
 
     // ─────────────────────────────────────
-    // 5️⃣ SCORE VALIDATION (SERVER TRUTH)
+    // 5️⃣ ANTI-CHEAT (BURST-FRIENDLY)
     // ─────────────────────────────────────
-    const POINTS_PER_CLICK = 1;
-    const POINTS_PER_EPIC = 50;
-
-    const expectedScore =
-      clicks * POINTS_PER_CLICK + epicCount * POINTS_PER_EPIC;
-
-    if (score !== expectedScore) {
-      await this.blockUser(
-        userId,
-        `score mismatch: ${score} vs ${expectedScore}`,
-      );
-      throw new ForbiddenException('Cheat detected');
-    }
-
-    // ─────────────────────────────────────
-    // 6️⃣ ANTI-MACRO (PER SECOND)
-    // ─────────────────────────────────────
-    const seconds = Math.max(1, durationMs / 1000);
-
-    const MAX_EPIC_RATIO = 0.25; // 25%
+    const MAX_EPIC_RATIO = 0.25; // до 25% эпиков от кликов
 
     if (epicCount / Math.max(1, clicks) > MAX_EPIC_RATIO) {
       await this.blockUser(
@@ -253,12 +234,18 @@ export class GameService {
     }
 
     // ─────────────────────────────────────
+    // 6️⃣ SERVER SCORE (SOURCE OF TRUTH)
+    // ─────────────────────────────────────
+    // НЕ реальный игровой score, а вес для экономики
+    const serverScore = clicks * 1 + epicCount * 10;
+
+    // ─────────────────────────────────────
     // 7️⃣ STARS + XP (SAFE ECONOMY)
     // ─────────────────────────────────────
-    const starsEarnedRaw = Math.floor(score / 10);
+    const starsEarnedRaw = Math.floor(serverScore / 10);
     const starsEarned = Math.max(1, Math.min(starsEarnedRaw, 10));
 
-    const xpGained = Math.floor(score / 2);
+    const xpGained = Math.floor(serverScore / 2);
 
     let newLevel = user.level;
     let newXp = user.xp + xpGained;
@@ -277,7 +264,7 @@ export class GameService {
       this.prisma.game.update({
         where: { id: gameId },
         data: {
-          score,
+          score, // client score (UI)
           clicks,
           epicCount,
           finishedAt: new Date(),
