@@ -203,7 +203,7 @@ export class GameService {
     // 4️⃣ GAME LIMITS
     // ─────────────────────────────────────
     const MAX_TOTAL_CLICKS = 500;
-    const MAX_EPIC_TOTAL = 50;
+    const MAX_EPIC_TOTAL = 80;
 
     if (clicks > MAX_TOTAL_CLICKS) {
       await this.blockUser(userId, `clicks overflow: ${clicks}`);
