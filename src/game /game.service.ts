@@ -223,7 +223,7 @@ export class GameService {
     // ─────────────────────────────────────
     // 5️⃣ ANTI-CHEAT (BURST-FRIENDLY)
     // ─────────────────────────────────────
-    const MAX_EPIC_RATIO = 0.25; // до 25% эпиков от кликов
+    const MAX_EPIC_RATIO = 0.4; // до 25% эпиков от кликов
 
     if (epicCount / Math.max(1, clicks) > MAX_EPIC_RATIO) {
       await this.blockUser(
