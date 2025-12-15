@@ -7,6 +7,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import * as jwt from 'jsonwebtoken';
 import { NotificationService } from '../notification/notification.service';
+import { ForbiddenException } from '@nestjs/common';
 
 interface JwtPayload {
   userId: number;
@@ -20,6 +21,14 @@ export class GameService {
     private readonly notificationService: NotificationService,
   ) {}
 
+  private async blockUser(userId: number, reason: string) {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { isBlocked: true },
+    });
+
+    console.log('🚨 USER BLOCKED:', { userId, reason });
+  }
   /** Достаём userId из JWT-токена */
   private getUserIdFromToken(token: string): number {
     if (!token) {
@@ -120,22 +129,43 @@ export class GameService {
   ) {
     const userId = this.getUserIdFromToken(token);
 
-    console.log('[GameService.finishGame] input =', {
-      userId,
-      gameId,
-      score,
-      clicks,
-      epicCount,
+    // ─────────────────────────────────────
+    // 0️⃣ USER + BLOCK CHECK (ВСЕГДА ПЕРВЫМ)
+    // ─────────────────────────────────────
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        isBlocked: true,
+        extraTimeLevel: true,
+        level: true,
+        xp: true,
+        stars: true,
+        telegramId: true,
+      },
     });
 
+    if (!user) throw new UnauthorizedException('User not found');
+    if (user.isBlocked) throw new ForbiddenException('User is blocked');
+
+    // ─────────────────────────────────────
+    // 1️⃣ BASIC PAYLOAD VALIDATION
+    // ─────────────────────────────────────
     if (!gameId || Number.isNaN(gameId)) {
       throw new BadRequestException('Invalid gameId');
     }
 
-    if (score === null || score === undefined || Number.isNaN(score)) {
-      throw new BadRequestException('Invalid score');
+    if (![score, clicks, epicCount].every(Number.isFinite)) {
+      throw new BadRequestException('Invalid payload');
     }
 
+    if (score < 0 || clicks < 0 || epicCount < 0) {
+      throw new BadRequestException('Negative values are not allowed');
+    }
+
+    // ─────────────────────────────────────
+    // 2️⃣ LOAD GAME + OWNERSHIP
+    // ─────────────────────────────────────
     const game = await this.prisma.game.findUnique({
       where: { id: gameId },
     });
@@ -144,37 +174,92 @@ export class GameService {
       throw new UnauthorizedException('Game not found or not yours');
     }
 
-    // ⭐ звёзды за игру
-    const starsEarned = Math.max(1, Math.floor((score ?? 0) / 5));
-
-    // Сохраняем результат игры
-    const updatedGame = await this.prisma.game.update({
-      where: { id: gameId },
-      data: {
-        score,
-        clicks,
-        epicCount,
-        finishedAt: new Date(),
-      },
-    });
-
-    // Получаем текущего пользователя (для XP/level/telegramId)
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        level: true,
-        xp: true,
-        stars: true,
-        telegramId: true,
-      },
-    });
-
-    if (!user) {
-      throw new UnauthorizedException('User not found');
+    if (game.finishedAt) {
+      throw new BadRequestException('Game already finished');
     }
 
-    // 📈 опыт за игру
-    const xpGained = score ?? 0;
+    // ─────────────────────────────────────
+    // 3️⃣ TIME VALIDATION
+    // ─────────────────────────────────────
+    const BASE_DURATION_MS = 60_000;
+    const EXTRA_TIME_PER_LEVEL_MS = 5_000;
+    const ROUND_DURATION_MS =
+      BASE_DURATION_MS + (user.extraTimeLevel ?? 0) * EXTRA_TIME_PER_LEVEL_MS;
+
+    const durationMs = Date.now() - game.createdAt.getTime();
+
+    const MIN_DURATION_MS = 8_000;
+    if (durationMs < MIN_DURATION_MS) {
+      await this.blockUser(userId, `finish too fast: ${durationMs}ms`);
+      throw new ForbiddenException('Cheat detected');
+    }
+
+    const LATE_TOLERANCE_MS = 3_000;
+    if (durationMs > ROUND_DURATION_MS + LATE_TOLERANCE_MS) {
+      throw new BadRequestException('Round time exceeded');
+    }
+
+    // ─────────────────────────────────────
+    // 4️⃣ GAME LIMITS (ТВОИ ЦИФРЫ)
+    // ─────────────────────────────────────
+    const MAX_TOTAL_CLICKS = 500;
+    const MAX_EPIC_TOTAL = 50;
+
+    if (clicks > MAX_TOTAL_CLICKS) {
+      await this.blockUser(userId, `clicks overflow: ${clicks}`);
+      throw new ForbiddenException('Cheat detected');
+    }
+
+    if (epicCount > MAX_EPIC_TOTAL) {
+      await this.blockUser(userId, `epic overflow: ${epicCount}`);
+      throw new ForbiddenException('Cheat detected');
+    }
+
+    if (epicCount > clicks) {
+      await this.blockUser(userId, 'epicCount > clicks');
+      throw new ForbiddenException('Cheat detected');
+    }
+
+    // ─────────────────────────────────────
+    // 5️⃣ SCORE VALIDATION (SERVER TRUTH)
+    // ─────────────────────────────────────
+    const POINTS_PER_CLICK = 1;
+    const POINTS_PER_EPIC = 50;
+
+    const expectedScore =
+      clicks * POINTS_PER_CLICK + epicCount * POINTS_PER_EPIC;
+
+    if (score !== expectedScore) {
+      await this.blockUser(
+        userId,
+        `score mismatch: ${score} vs ${expectedScore}`,
+      );
+      throw new ForbiddenException('Cheat detected');
+    }
+
+    // ─────────────────────────────────────
+    // 6️⃣ ANTI-MACRO (PER SECOND)
+    // ─────────────────────────────────────
+    const seconds = Math.max(1, durationMs / 1000);
+
+    const MAX_EPIC_RATIO = 0.25; // 25%
+
+    if (epicCount / Math.max(1, clicks) > MAX_EPIC_RATIO) {
+      await this.blockUser(
+        userId,
+        `epic/click ratio too high: ${epicCount}/${clicks}`,
+      );
+      throw new ForbiddenException('Cheat detected');
+    }
+
+    // ─────────────────────────────────────
+    // 7️⃣ STARS + XP (SAFE ECONOMY)
+    // ─────────────────────────────────────
+    const starsEarnedRaw = Math.floor(score / 10);
+    const starsEarned = Math.max(1, Math.min(starsEarnedRaw, 10));
+
+    const xpGained = Math.floor(score / 2);
+
     let newLevel = user.level;
     let newXp = user.xp + xpGained;
     let leveledUp = false;
@@ -185,59 +270,63 @@ export class GameService {
       leveledUp = true;
     }
 
-    // Обновляем пользователя: звёзды + уровень + XP
-    const updatedUser = await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        stars: { increment: starsEarned },
-        level: newLevel,
-        xp: newXp,
-      },
-      select: { stars: true, level: true, xp: true, telegramId: true },
-    });
+    // ─────────────────────────────────────
+    // 8️⃣ TRANSACTION: GAME + USER
+    // ─────────────────────────────────────
+    const [updatedGame, updatedUser] = await this.prisma.$transaction([
+      this.prisma.game.update({
+        where: { id: gameId },
+        data: {
+          score,
+          clicks,
+          epicCount,
+          finishedAt: new Date(),
+        },
+      }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          stars: { increment: starsEarned },
+          level: newLevel,
+          xp: newXp,
+        },
+        select: {
+          stars: true,
+          level: true,
+          xp: true,
+          telegramId: true,
+        },
+      }),
+    ]);
 
-    console.log('[GameService.finishGame] Game saved');
-    console.log('[GameService.finishGame] User stars =', updatedUser.stars);
-
-    // 🎁 РЕФЕРАЛЬНАЯ НАГРАДА
+    // ─────────────────────────────────────
+    // 9️⃣ REFERRAL (FIRST GAME ONLY)
+    // ─────────────────────────────────────
     let referralReward = 0;
 
-    // Считаем, сколько завершённых игр у пользователя
     const gamesCount = await this.prisma.game.count({
       where: { userId, finishedAt: { not: null } },
     });
 
-    const isFirstGame = gamesCount === 1;
-
-    if (isFirstGame) {
-      console.log(`🎉 FIRST GAME of user ${userId}`);
-
+    if (gamesCount === 1) {
       const ref = await this.prisma.referral.findFirst({
-        where: {
-          invitedId: userId,
-          rewarded: false,
-        },
-        include: {
-          inviter: true,
-        },
+        where: { invitedId: userId, rewarded: false },
+        include: { inviter: true },
       });
 
-      if (ref && ref.inviter) {
-        console.log(`🎁 Giving referral reward to inviter ${ref.inviterId}`);
-
+      if (ref?.inviter) {
         referralReward = 50;
 
-        await this.prisma.user.update({
-          where: { id: ref.inviterId },
-          data: {
-            stars: { increment: referralReward },
-          },
-        });
-
-        await this.prisma.referral.update({
-          where: { id: ref.id },
-          data: { rewarded: true },
-        });
+        await this.prisma.$transaction([
+          this.prisma.user.update({
+            where: { id: ref.inviterId },
+            data: { stars: { increment: referralReward } },
+          }),
+          this.prisma.referral.update({
+            where: { id: ref.id },
+            data: { rewarded: true },
+          }),
+        ]);
 
         if (ref.inviter.telegramId) {
           await this.notificationService.sendReferralReward(
@@ -248,6 +337,9 @@ export class GameService {
       }
     }
 
+    // ─────────────────────────────────────
+    // ✅ RESULT
+    // ─────────────────────────────────────
     return {
       ok: true,
       game: updatedGame,
@@ -393,19 +485,19 @@ export class GameService {
       alreadyClaimed =
         !!user.dailyCatch1000ClaimAt &&
         user.dailyCatch1000ClaimAt >= startOfDay;
-      reward = 500;
+      reward = 100;
       userData.dailyCatch1000ClaimAt = now;
     } else if (questId === 'epic_100') {
       completed = totalEpics >= 100;
       alreadyClaimed =
         !!user.dailyEpic100ClaimAt && user.dailyEpic100ClaimAt >= startOfDay;
-      reward = 300;
+      reward = 50;
       userData.dailyEpic100ClaimAt = now;
     } else if (questId === 'play_3') {
       completed = gamesCount >= 3;
       alreadyClaimed =
         !!user.dailyPlay3ClaimAt && user.dailyPlay3ClaimAt >= startOfDay;
-      reward = 80;
+      reward = 20;
       userData.dailyPlay3ClaimAt = now;
     } else {
       throw new BadRequestException('Unknown quest');

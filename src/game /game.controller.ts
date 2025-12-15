@@ -7,6 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { GameService } from './game.service';
+import { FinishGameDto } from './finish-game.dto';
 
 @Controller('game')
 export class GameController {
@@ -39,26 +40,21 @@ export class GameController {
 
   @Post('finish')
   async finish(
-    @Headers('authorization') authHeader?: string,
-    @Body() body?: any,
+    @Headers('authorization') authHeader: string,
+    @Body() body: FinishGameDto,
   ) {
-    console.log('[/game/finish] raw body =', body);
-
     const token = this.extractToken(authHeader);
-    const gameId = Number(body?.gameId);
-    const score = Number(body?.score);
-    const clicks = Number(body?.clicks ?? 0);
-    const epicCount = Number(body?.epicCount ?? 0);
 
-    console.log('[/game/finish] parsed =', {
-      gameId,
-      score,
-      clicks,
-      epicCount,
-    });
-
-    return this.gameService.finishGame(token, gameId, score, clicks, epicCount);
+    return this.gameService.finishGame(
+      token,
+      body.gameId,
+      body.score,
+      body.clicks,
+      body.epicCount,
+    );
   }
+
+
   @Post('daily-quests/claim')
   async claimDailyQuest(
     @Headers('authorization') authHeader?: string,
