@@ -270,33 +270,64 @@ export class TournamentService {
   // ───────────────── CURRENT ─────────────────
   async getCurrentTournament(type: TournamentType, token?: string) {
     const tournament = await this.getOrCreateTournament(type);
+
     let joined = false;
     let coins = 0;
     let ticketsCount = 0;
+    let userId: number | null = null;
 
     if (token) {
       try {
-        const userId = this.getUserIdFromToken(token);
+        userId = this.getUserIdFromToken(token);
+
         joined = !!(await this.prisma.tournamentParticipant.findUnique({
           where: {
-            userId_tournamentId: { userId, tournamentId: tournament.id },
+            userId_tournamentId: {
+              userId,
+              tournamentId: tournament.id,
+            },
           },
         }));
+
         const user = await this.prisma.user.findUnique({
           where: { id: userId },
+          select: { coins: true },
         });
+
         coins = user?.coins ?? 0;
+
         ticketsCount = await this.prisma.ticket.count({
           where: { userId, usedAt: null },
         });
       } catch {}
     }
 
+    const participants = await this.prisma.tournamentParticipant.findMany({
+      where: { tournamentId: tournament.id },
+      include: { user: true },
+      orderBy: { score: 'desc' },
+      take: 20,
+    });
+
     return {
-      ...tournament,
+      tournamentId: tournament.id,
+      type: tournament.type,
+      status: tournament.status,
+      startsAt: tournament.startsAt,
+      endsAt: tournament.endsAt,
+      joinDeadline: tournament.joinDeadline,
+      entryFee: tournament.entryFee,
+      prizePool: tournament.prizePool,
+
       joined,
       coins,
       ticketsCount,
+
+      participants: participants.map((p) => ({
+        userId: p.userId,
+        username: p.user.username ?? p.user.firstName ?? null,
+        score: p.score,
+      })),
     };
   }
 }
