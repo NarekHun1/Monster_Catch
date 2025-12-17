@@ -158,4 +158,5 @@ enum TournamentStatus {
 enum TournamentType {
   HOURLY
   DAILY
+  CASH_CUP
 }

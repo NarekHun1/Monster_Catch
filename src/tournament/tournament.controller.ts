@@ -60,7 +60,7 @@ export class TournamentController {
     @Body() body: { type: TournamentType; entry: 'TICKET' | 'COINS' },
   ) {
     const token = auth.replace('Bearer ', '');
-    return this.service.join(token, body.type, body.entry);
+    return this.service.join(token, body.type);
   }
 
   // ─────────────────────────────────────
