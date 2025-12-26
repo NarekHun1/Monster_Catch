@@ -230,15 +230,24 @@ export class TournamentService {
   }
 
   // ───────────────── SUBMIT SCORE ─────────────────
-  async submitScore(token: string, type: TournamentType, score: number) {
+  async submitScore(token: string, tournamentId: number, score: number) {
     const userId = this.getUserIdFromToken(token);
-    const tournament = await this.getOrCreateTournament(type);
 
-    if (new Date() > tournament.endsAt) return { updated: false };
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { id: tournamentId },
+    });
+
+    if (
+      !tournament ||
+      tournament.status !== 'ACTIVE' ||
+      new Date() > tournament.endsAt
+    ) {
+      return { updated: false };
+    }
 
     const p = await this.prisma.tournamentParticipant.findUnique({
       where: {
-        userId_tournamentId: { userId, tournamentId: tournament.id },
+        userId_tournamentId: { userId, tournamentId },
       },
     });
 
