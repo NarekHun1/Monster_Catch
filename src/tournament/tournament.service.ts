@@ -140,18 +140,46 @@ export class TournamentService {
 
     if (exists) return { joined: false, tournamentId: tournament.id };
 
-    // 💰 CASH CUP (tickets → prizePool)
+    // 💰 CASH CUP (tickets OR coins → prizePool)
     if (tournament.type === 'CASH_CUP') {
       const ticket = await this.prisma.ticket.findFirst({
         where: { userId, usedAt: null },
         orderBy: { createdAt: 'asc' },
       });
-      if (!ticket) throw new BadRequestException('Not enough tickets');
+
+      // 🎟 Вход по билету
+      if (ticket) {
+        await this.prisma.$transaction([
+          this.prisma.ticket.update({
+            where: { id: ticket.id },
+            data: { usedAt: new Date() },
+          }),
+          this.prisma.tournament.update({
+            where: { id: tournament.id },
+            data: { prizePool: { increment: tournament.entryFee } },
+          }),
+          this.prisma.tournamentParticipant.create({
+            data: { userId, tournamentId: tournament.id },
+          }),
+        ]);
+
+        return { joined: true, tournamentId: tournament.id, via: 'ticket' };
+      }
+
+      // 🪙 fallback coins
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { coins: true },
+      });
+
+      if (!user || user.coins < tournament.entryFee) {
+        throw new BadRequestException('Not enough tickets or coins');
+      }
 
       await this.prisma.$transaction([
-        this.prisma.ticket.update({
-          where: { id: ticket.id },
-          data: { usedAt: new Date() },
+        this.prisma.user.update({
+          where: { id: userId },
+          data: { coins: { decrement: tournament.entryFee } },
         }),
         this.prisma.tournament.update({
           where: { id: tournament.id },
@@ -162,7 +190,7 @@ export class TournamentService {
         }),
       ]);
 
-      return { joined: true, tournamentId: tournament.id };
+      return { joined: true, tournamentId: tournament.id, via: 'coins' };
     }
 
     // 🎟 DAILY / HOURLY ticket entry
