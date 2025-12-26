@@ -23,9 +23,41 @@ export class NotificationService {
     }
   }
 
-  async sendReferralReward(telegramId: string | number, reward: number) {
-    const msg = `🎉 Ты получил +${reward} ⭐ за первую игру друга! Спасибо, что зовёшь в Monster Catch 🙌`;
-    await this.sendTextToTelegramId(telegramId, msg);
+  async sendReferralReward(telegramId: string, tickets: number) {
+    try {
+      // 🔒 ОБЯЗАТЕЛЬНО: fallback, иначе TS ошибка
+      const webAppUrl =
+        process.env.WEBAPP_URL ?? 'https://monster-catch-front.vercel.app';
+
+      await this.bot.telegram.sendMessage(
+        telegramId,
+        `🎉 *Поздравляем!*\n\n` +
+          `👥 Ваш друг впервые сыграл в *Monster Catch*\n` +
+          `🎟 Вы получили *${tickets} билетов*\n\n` +
+          `🔥 Заходите в турниры и выигрывайте!`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: '🎮 Открыть игру',
+                  web_app: {
+                    url: webAppUrl, // ✅ строго string
+                  },
+                },
+              ],
+            ],
+          },
+        },
+      );
+    } catch (error) {
+      // ❗ чтобы падение Telegram не валило игру
+      this.logger.error(
+        `Failed to send referral notification to ${telegramId}`,
+        error,
+      );
+    }
   }
   async sendDailyQuestsPromo(telegramId: string | number) {
     const text =

@@ -140,6 +140,7 @@ model Ticket {
 
 enum TicketType {
   TOURNAMENT
+  REFERRAL
 }
 
 enum WithdrawalStatus {

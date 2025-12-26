@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import * as jwt from 'jsonwebtoken';
 import { NotificationService } from '../notification/notification.service';
 import { ForbiddenException } from '@nestjs/common';
+import { TicketType } from '@prisma/client';
 
 interface JwtPayload {
   userId: number;
@@ -304,40 +305,59 @@ export class GameService {
         },
       }),
     ]);
-
     // ─────────────────────────────────────
     // 9️⃣ REFERRAL (FIRST GAME ONLY)
+    // 🎟 5 БИЛЕТОВ ЗА КАЖДОГО ДРУГА
     // ─────────────────────────────────────
-    let referralReward = 0;
+    let referralRewardTickets = 0;
 
+    // сколько завершённых игр у игрока
     const gamesCount = await this.prisma.game.count({
-      where: { userId, finishedAt: { not: null } },
+      where: {
+        userId,
+        finishedAt: { not: null },
+      },
     });
 
+    // ⚠️ награда ТОЛЬКО после ПЕРВОЙ игры
     if (gamesCount === 1) {
       const ref = await this.prisma.referral.findFirst({
-        where: { invitedId: userId, rewarded: false },
-        include: { inviter: true },
+        where: {
+          invitedId: userId,
+          rewarded: false,
+        },
+        include: {
+          inviter: true,
+        },
       });
 
       if (ref?.inviter) {
-        referralReward = 50;
+        const REFERRAL_TICKETS = 5;
+        referralRewardTickets = REFERRAL_TICKETS;
 
         await this.prisma.$transaction([
-          this.prisma.user.update({
-            where: { id: ref.inviterId },
-            data: { stars: { increment: referralReward } },
-          }),
+          // 🎟 создаём 5 билетов пригласившему
+          ...Array.from({ length: REFERRAL_TICKETS }).map(() =>
+            this.prisma.ticket.create({
+              data: {
+                userId: ref.inviterId,
+                type: TicketType.REFERRAL,
+              },
+            }),
+          ),
+
+          // ❗ помечаем реферал как награждённый
           this.prisma.referral.update({
             where: { id: ref.id },
             data: { rewarded: true },
           }),
         ]);
 
+        // 🔔 TELEGRAM УВЕДОМЛЕНИЕ
         if (ref.inviter.telegramId) {
           await this.notificationService.sendReferralReward(
             ref.inviter.telegramId,
-            referralReward,
+            REFERRAL_TICKETS,
           );
         }
       }
@@ -349,13 +369,19 @@ export class GameService {
     return {
       ok: true,
       game: updatedGame,
+
+      // ⭐ награда за игру
       starsEarned,
       totalStars: updatedUser.stars,
+
+      // 🧠 прогресс
       level: updatedUser.level,
       xp: updatedUser.xp,
       xpGained,
       leveledUp,
-      referralReward,
+
+      // 🎁 РЕФЕРАЛ
+      referralRewardTickets, // 👈 0 или 5
     };
   }
 
