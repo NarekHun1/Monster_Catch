@@ -71,18 +71,23 @@ export class TournamentController {
   @Post('submit-score')
   async submitScore(
     @Headers('authorization') auth?: string,
-    @Body('type') type?: TournamentType,
+    @Body('tournamentId') tournamentId?: number,
     @Body('score') score?: number,
   ) {
-    if (!type) {
-      throw new BadRequestException('Tournament type is required');
+    if (typeof tournamentId !== 'number') {
+      throw new BadRequestException('TournamentId must be a number');
     }
     if (typeof score !== 'number') {
       throw new BadRequestException('Score must be a number');
     }
 
     const token = this.extractToken(auth);
-    return this.service.submitScore(token, type, score);
+
+    return this.service.submitScore(
+      token,
+      tournamentId,
+      score,
+    );
   }
 
   // ─────────────────────────────────────
