@@ -236,17 +236,36 @@ export class GameService {
     // ─────────────────────────────────────
     // 6️⃣ SERVER SCORE (SOURCE OF TRUTH)
     // ─────────────────────────────────────
-    // НЕ реальный игровой score, а вес для экономики
+    // экономический вес игры
     const serverScore = clicks * 1 + epicCount * 10;
 
     // ─────────────────────────────────────
-    // 7️⃣ STARS + XP (SAFE ECONOMY)
+    // 7️⃣ STARS (SOFT SCALE + CAP)
     // ─────────────────────────────────────
-    const starsEarnedRaw = Math.floor(serverScore / 10);
-    const starsEarned = Math.max(1, Math.min(starsEarnedRaw, 10));
+    // мягкий рост + потолок
+    let starsEarned = Math.floor(serverScore / 12);
 
+    // минимальная награда
+    starsEarned = Math.max(starsEarned, 3);
+
+    // максимум за игру
+    starsEarned = Math.min(starsEarned, 25);
+
+    // бонус за очень хорошую игру
+    if (serverScore >= 250) starsEarned += 5;
+    if (serverScore >= 350) starsEarned += 5;
+
+    // финальный предохранитель
+    starsEarned = Math.min(starsEarned, 35);
+
+    // ─────────────────────────────────────
+    // 8️⃣ XP (быстрее, чем stars)
+    // ─────────────────────────────────────
     const xpGained = Math.floor(serverScore / 2);
 
+    // ─────────────────────────────────────
+    // 9️⃣ LEVEL UP LOGIC
+    // ─────────────────────────────────────
     let newLevel = user.level;
     let newXp = user.xp + xpGained;
     let leveledUp = false;

@@ -3,7 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class TicketsService {
-  private readonly STARS_PER_TICKET = 2000;
+  private readonly STARS_PER_TICKET = 100;
 
   constructor(private prisma: PrismaService) {}
 
