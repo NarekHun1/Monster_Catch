@@ -140,50 +140,58 @@ export class TournamentService {
 
     if (exists) return { joined: false, tournamentId: tournament.id };
 
-    // 💰 CASH CUP (tickets OR coins → prizePool)
+    // 💰 CASH CUP (10 tickets OR 10 coins)
     if (tournament.type === 'CASH_CUP') {
-      const ticket = await this.prisma.ticket.findFirst({
+      const REQUIRED = tournament.entryFee; // 10
+
+      // 1️⃣ ПЫТАЕМСЯ ВОЙТИ ПО БИЛЕТАМ
+      const tickets = await this.prisma.ticket.findMany({
         where: { userId, usedAt: null },
         orderBy: { createdAt: 'asc' },
+        take: REQUIRED,
       });
 
-      // 🎟 Вход по билету
-      if (ticket) {
+      if (tickets.length === REQUIRED) {
         await this.prisma.$transaction([
-          this.prisma.ticket.update({
-            where: { id: ticket.id },
-            data: { usedAt: new Date() },
-          }),
+          // списываем РОВНО 10 билетов
+          ...tickets.map((t) =>
+            this.prisma.ticket.update({
+              where: { id: t.id },
+              data: { usedAt: new Date() },
+            }),
+          ),
+
           this.prisma.tournament.update({
             where: { id: tournament.id },
-            data: { prizePool: { increment: tournament.entryFee } },
+            data: { prizePool: { increment: REQUIRED } },
           }),
+
           this.prisma.tournamentParticipant.create({
             data: { userId, tournamentId: tournament.id },
           }),
         ]);
 
-        return { joined: true, tournamentId: tournament.id, via: 'ticket' };
+        return { joined: true, tournamentId: tournament.id, via: 'tickets' };
       }
 
-      // 🪙 fallback coins
+      // 2️⃣ ЕСЛИ БИЛЕТОВ МЕНЬШЕ 10 — ПРОБУЕМ COINS
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
         select: { coins: true },
       });
 
-      if (!user || user.coins < tournament.entryFee) {
-        throw new BadRequestException('Not enough tickets or coins');
+      if (!user || user.coins < REQUIRED) {
+        throw new BadRequestException('Need 10 tickets or 10 coins');
       }
 
       await this.prisma.$transaction([
         this.prisma.user.update({
           where: { id: userId },
-          data: { coins: { decrement: tournament.entryFee } },
+          data: { coins: { decrement: REQUIRED } },
         }),
         this.prisma.tournament.update({
           where: { id: tournament.id },
-          data: { prizePool: { increment: tournament.entryFee } },
+          data: { prizePool: { increment: REQUIRED } },
         }),
         this.prisma.tournamentParticipant.create({
           data: { userId, tournamentId: tournament.id },
@@ -192,7 +200,6 @@ export class TournamentService {
 
       return { joined: true, tournamentId: tournament.id, via: 'coins' };
     }
-
     // 🎟 DAILY / HOURLY ticket entry
     const ticket = await this.prisma.ticket.findFirst({
       where: { userId, usedAt: null },
