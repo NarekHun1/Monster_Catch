@@ -13,10 +13,39 @@ export class TelegramUpdate {
   ) {}
 
   // ───────────────────────────────
-  // 1) START → открыть WebApp
+  // START → welcome + referral
   // ───────────────────────────────
   @Start()
   async onStart(@Ctx() ctx: Context) {
+    const tgUser = ctx.from;
+    if (!tgUser) return;
+
+    // 1️⃣ Upsert пользователя из Telegram
+    const user = await this.users.upsertFromTelegram({
+      id: tgUser.id,
+      username: tgUser.username,
+      first_name: tgUser.first_name,
+    });
+
+    // 2️⃣ Безопасно читаем payload (/start ref_xxx)
+    let payload: string | undefined;
+
+    if (
+      ctx.message &&
+      'text' in ctx.message &&
+      typeof ctx.message.text === 'string'
+    ) {
+      payload = ctx.message.text.split(' ')[1]; // ref_xxx
+    }
+
+    // 3️⃣ Регистрируем реферал
+    if (payload?.startsWith('ref_')) {
+      const inviterTelegramId = payload.replace('ref_', '');
+
+      await this.users.registerReferralByTelegramId(inviterTelegramId, user.id);
+    }
+
+    // 4️⃣ Welcome сообщение (БЕЗ ИЗМЕНЕНИЙ)
     const url =
       this.config.get('WEBAPP_URL') || 'https://monster-catch-front.vercel.app';
 
@@ -59,7 +88,7 @@ export class TelegramUpdate {
   }
 
   // ───────────────────────────────
-  // 4) pre_checkout_query
+  // pre_checkout_query
   // ───────────────────────────────
   @On('pre_checkout_query')
   async onPreCheckout(@Ctx() ctx: any) {
@@ -67,7 +96,7 @@ export class TelegramUpdate {
   }
 
   // ───────────────────────────────
-  // 5) Успешная оплата
+  // successful_payment
   // ───────────────────────────────
   @On('successful_payment')
   async onSuccess(@Ctx() ctx: any) {
@@ -85,7 +114,6 @@ export class TelegramUpdate {
     const coins = packs[packId];
     if (!coins) return ctx.reply('Ошибка товара ❌');
 
-    // записываем оплату
     await this.payments.registerPayment({
       telegramPaymentChargeId: payment.telegram_payment_charge_id,
       starsAmount: payment.total_amount,
