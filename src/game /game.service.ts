@@ -124,7 +124,7 @@ export class GameService {
   async finishGame(
     token: string,
     gameId: number,
-    score: number, // client score (ТОЛЬКО ДЛЯ UI)
+    score: number,
     clicks: number,
     epicCount: number,
   ) {
@@ -189,84 +189,50 @@ export class GameService {
 
     const durationMs = Date.now() - game.createdAt.getTime();
 
-    const MIN_DURATION_MS = 8_000;
-    if (durationMs < MIN_DURATION_MS) {
+    if (durationMs < 8_000) {
       await this.blockUser(userId, `finish too fast: ${durationMs}ms`);
       throw new ForbiddenException('Cheat detected');
     }
 
-    const LATE_TOLERANCE_MS = 3_000;
-    if (durationMs > ROUND_DURATION_MS + LATE_TOLERANCE_MS) {
+    if (durationMs > ROUND_DURATION_MS + 3_000) {
       throw new BadRequestException('Round time exceeded');
     }
 
     // ─────────────────────────────────────
-    // 4️⃣ GAME LIMITS
+    // 4️⃣ ANTI-CHEAT
     // ─────────────────────────────────────
-    const MAX_TOTAL_CLICKS = 500;
-    const MAX_EPIC_TOTAL = 80;
-
-    if (clicks > MAX_TOTAL_CLICKS) {
-      await this.blockUser(userId, `clicks overflow: ${clicks}`);
+    if (clicks > 500 || epicCount > 80 || epicCount > clicks) {
+      await this.blockUser(userId, 'invalid game metrics');
       throw new ForbiddenException('Cheat detected');
     }
 
-    if (epicCount > MAX_EPIC_TOTAL) {
-      await this.blockUser(userId, `epic overflow: ${epicCount}`);
-      throw new ForbiddenException('Cheat detected');
-    }
-
-    if (epicCount > clicks) {
-      await this.blockUser(userId, 'epicCount > clicks');
+    if (epicCount / Math.max(1, clicks) > 0.4) {
+      await this.blockUser(userId, 'epic ratio too high');
       throw new ForbiddenException('Cheat detected');
     }
 
     // ─────────────────────────────────────
-    // 5️⃣ ANTI-CHEAT (BURST-FRIENDLY)
+    // 5️⃣ SERVER SCORE
     // ─────────────────────────────────────
-    const MAX_EPIC_RATIO = 0.4; // до 25% эпиков от кликов
-
-    if (epicCount / Math.max(1, clicks) > MAX_EPIC_RATIO) {
-      await this.blockUser(
-        userId,
-        `epic/click ratio too high: ${epicCount}/${clicks}`,
-      );
-      throw new ForbiddenException('Cheat detected');
-    }
+    const serverScore = clicks + epicCount * 10;
 
     // ─────────────────────────────────────
-    // 6️⃣ SERVER SCORE (SOURCE OF TRUTH)
+    // 6️⃣ STARS
     // ─────────────────────────────────────
-    // экономический вес игры
-    const serverScore = clicks * 1 + epicCount * 10;
-
-    // ─────────────────────────────────────
-    // 7️⃣ STARS (SOFT SCALE + CAP)
-    // ─────────────────────────────────────
-    // мягкий рост + потолок
     let starsEarned = Math.floor(serverScore / 12);
-
-    // минимальная награда
     starsEarned = Math.max(starsEarned, 3);
-
-    // максимум за игру
     starsEarned = Math.min(starsEarned, 25);
 
-    // бонус за очень хорошую игру
     if (serverScore >= 250) starsEarned += 5;
     if (serverScore >= 350) starsEarned += 5;
 
-    // финальный предохранитель
     starsEarned = Math.min(starsEarned, 35);
 
     // ─────────────────────────────────────
-    // 8️⃣ XP (быстрее, чем stars)
+    // 7️⃣ XP + LEVEL
     // ─────────────────────────────────────
     const xpGained = Math.floor(serverScore / 2);
 
-    // ─────────────────────────────────────
-    // 9️⃣ LEVEL UP LOGIC
-    // ─────────────────────────────────────
     let newLevel = user.level;
     let newXp = user.xp + xpGained;
     let leveledUp = false;
@@ -284,7 +250,7 @@ export class GameService {
       this.prisma.game.update({
         where: { id: gameId },
         data: {
-          score, // client score (UI)
+          score,
           clicks,
           epicCount,
           finishedAt: new Date(),
@@ -305,61 +271,52 @@ export class GameService {
         },
       }),
     ]);
+
     // ─────────────────────────────────────
-    // 9️⃣ REFERRAL (FIRST GAME ONLY)
-    // 🎟 5 БИЛЕТОВ ЗА КАЖДОГО ДРУГА
+    // 9️⃣ REFERRAL — FIRST GAME ONLY (FIXED)
+    // 🎟 5 БИЛЕТОВ ПРИГЛАСИВШЕМУ
     // ─────────────────────────────────────
     let referralRewardTickets = 0;
 
-    // сколько завершённых игр у игрока
-    const gamesCount = await this.prisma.game.count({
+    const referral = await this.prisma.referral.findFirst({
       where: {
-        userId,
-        finishedAt: { not: null },
+        invitedId: userId,
+        rewarded: false,
+      },
+      include: {
+        inviter: true,
       },
     });
 
-    // ⚠️ награда ТОЛЬКО после ПЕРВОЙ игры
-    if (gamesCount === 1) {
-      const ref = await this.prisma.referral.findFirst({
-        where: {
-          invitedId: userId,
-          rewarded: false,
-        },
-        include: {
-          inviter: true,
-        },
-      });
+    if (referral?.inviter) {
+      const REFERRAL_TICKETS = 5;
+      referralRewardTickets = REFERRAL_TICKETS;
 
-      if (ref?.inviter) {
-        const REFERRAL_TICKETS = 5;
-        referralRewardTickets = REFERRAL_TICKETS;
-
-        await this.prisma.$transaction([
-          // 🎟 создаём 5 билетов пригласившему
-          ...Array.from({ length: REFERRAL_TICKETS }).map(() =>
-            this.prisma.ticket.create({
-              data: {
-                userId: ref.inviterId,
-                type: TicketType.REFERRAL,
-              },
-            }),
-          ),
-
-          // ❗ помечаем реферал как награждённый
-          this.prisma.referral.update({
-            where: { id: ref.id },
-            data: { rewarded: true },
+      await this.prisma.$transaction([
+        ...Array.from({ length: REFERRAL_TICKETS }).map(() =>
+          this.prisma.ticket.create({
+            data: {
+              userId: referral.inviterId,
+              type: TicketType.REFERRAL,
+            },
           }),
-        ]);
+        ),
+        this.prisma.referral.update({
+          where: { id: referral.id },
+          data: { rewarded: true },
+        }),
+      ]);
 
-        // 🔔 TELEGRAM УВЕДОМЛЕНИЕ
-        if (ref.inviter.telegramId) {
+      // 🔔 TELEGRAM (НЕ ЛОМАЕМ FLOW)
+      try {
+        if (referral.inviter.telegramId) {
           await this.notificationService.sendReferralReward(
-            ref.inviter.telegramId,
+            referral.inviter.telegramId,
             REFERRAL_TICKETS,
           );
         }
+      } catch (e) {
+        console.error('Referral notification failed', e);
       }
     }
 
@@ -370,20 +327,18 @@ export class GameService {
       ok: true,
       game: updatedGame,
 
-      // ⭐ награда за игру
       starsEarned,
       totalStars: updatedUser.stars,
 
-      // 🧠 прогресс
       level: updatedUser.level,
       xp: updatedUser.xp,
       xpGained,
       leveledUp,
 
-      // 🎁 РЕФЕРАЛ
-      referralRewardTickets, // 👈 0 или 5
+      referralRewardTickets, // 0 или 5
     };
   }
+
 
   private getXpForNextLevel(level: number): number {
     // простая формула: чем выше уровень, тем больше нужно XP
