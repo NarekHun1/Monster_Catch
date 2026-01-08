@@ -5,10 +5,11 @@ import { TournamentController } from './tournament.controller';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ConfigModule } from '@nestjs/config';
 import { TournamentBroadcastService } from './tournament-broadcast.service';
+import { TournamentBroadcastController } from './tournament-broadcast.controller';
 
 @Module({
   imports: [PrismaModule, ConfigModule],
   providers: [TournamentService, TournamentBroadcastService],
-  controllers: [TournamentController],
+  controllers: [TournamentController, TournamentBroadcastController],
 })
 export class TournamentModule {}

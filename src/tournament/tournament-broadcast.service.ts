@@ -15,7 +15,64 @@ export class TournamentBroadcastService {
     private readonly tournamentService: TournamentService,
     @InjectBot() private readonly bot: Telegraf,
   ) {}
+  // ================================
+  // 🆕 ОДНОРАЗОВАЯ РАССЫЛКА: INVITE FRIENDS
+  // ================================
+  async broadcastInviteFriendsOnce() {
+    this.logger.log('Starting invite friends broadcast');
 
+    const users = await this.prisma.user.findMany({
+      where: {
+        telegramId: { not: '' },
+        isBlocked: false,
+      },
+      select: {
+        telegramId: true,
+      },
+    });
+
+    if (!users.length) {
+      this.logger.log('No users to notify');
+      return { total: 0, sent: 0, failed: 0 };
+    }
+
+    const text = [
+      '👥 Пригласи друзей в игру!',
+      '',
+      'Поделись своей ссылкой с друзьями —',
+      'за каждого приглашённого ты получишь 🎟 5 билетов.',
+      '',
+      'Открой игру → «Пригласить друзей».',
+    ].join('\n');
+
+    let sent = 0;
+    let failed = 0;
+
+    for (const u of users) {
+      try {
+        await this.bot.telegram.sendMessage(Number(u.telegramId), text);
+        sent++;
+      } catch (e: any) {
+        failed++;
+        this.logger.warn(
+          `Failed invite broadcast to ${u.telegramId}: ${e.message}`,
+        );
+      }
+
+      // 🛑 анти-лимит Telegram
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    this.logger.log(
+      `Invite broadcast finished. Sent=${sent}, Failed=${failed}`,
+    );
+
+    return {
+      total: users.length,
+      sent,
+      failed,
+    };
+  }
   // ⏱ каждый час, в начале часа — ТОЛЬКО HOURLY
   @Cron('0 * * * *')
   async broadcastNewHourTournament() {
