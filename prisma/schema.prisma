@@ -36,6 +36,8 @@ model User {
   Ticket                Ticket[]
   StarExchange          StarExchange[]
   isBlocked             Boolean                 @default(false)
+  rouletteFreeDay       String?
+  rouletteLastSpinAt    DateTime?
 }
 
 model Game {
@@ -141,6 +143,7 @@ model Ticket {
 enum TicketType {
   TOURNAMENT
   REFERRAL
+  ROULETTE
 }
 
 enum WithdrawalStatus {

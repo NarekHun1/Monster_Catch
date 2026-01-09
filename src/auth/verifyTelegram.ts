@@ -17,7 +17,7 @@ export function verifyTelegramInitData(
     return false;
   }
 
-  // ❗ УБИРАЕМ ТОЛЬКО hash, signature не трогаем
+  // ❗ УБИРАЕМ ТОЛЬКО hash,  не трогаем
   params.delete('hash');
 
   const dataCheckArr: string[] = [];
