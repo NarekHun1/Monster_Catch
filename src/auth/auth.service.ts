@@ -51,11 +51,7 @@ export class AuthService {
 
     const jwtSecret = this.config.getOrThrow<string>('JWT_SECRET');
 
-    const token = jwt.sign(
-      { userId: user.id },
-      jwtSecret,
-      { expiresIn: '7d' },
-    );
+    const token = jwt.sign({ userId: user.id }, jwtSecret, { expiresIn: '7d' });
 
     return { token, user };
   }

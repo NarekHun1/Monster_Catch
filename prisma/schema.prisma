@@ -38,6 +38,7 @@ model User {
   isBlocked             Boolean                 @default(false)
   rouletteFreeDay       String?
   rouletteLastSpinAt    DateTime?
+  UserQuest             UserQuest[]
 }
 
 model Game {
@@ -116,6 +117,50 @@ model Withdrawal {
   user        User             @relation(fields: [userId], references: [id])
 }
 
+model Quest {
+  id            Int       @id @default(autoincrement())
+  title         String
+  description   String?
+  type          QuestType @default(SUBSCRIBE)
+  rewardTickets Int       @default(1)
+
+  // для подписки:
+  chatId       String? // например "-1001234567890" или "@mychannel"
+  chatUsername String? // "@mychannel" (удобно для ссылки)
+  inviteLink   String? // если приватный канал/чат
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  completions UserQuest[]
+}
+
+model UserQuest {
+  id          Int             @id @default(autoincrement())
+  userId      Int
+  questId     Int
+  status      UserQuestStatus @default(PENDING)
+  completedAt DateTime?
+  claimedAt   DateTime?
+  createdAt   DateTime        @default(now())
+
+  user  User  @relation(fields: [userId], references: [id])
+  quest Quest @relation(fields: [questId], references: [id])
+
+  @@unique([userId, questId])
+  @@index([userId, status])
+}
+
+enum QuestType {
+  SUBSCRIBE
+}
+
+enum UserQuestStatus {
+  PENDING
+  COMPLETED // проверка прошла
+  CLAIMED // билет выдан
+}
+
 model StarExchange {
   id        Int      @id @default(autoincrement())
   userId    Int
@@ -144,6 +189,7 @@ enum TicketType {
   TOURNAMENT
   REFERRAL
   ROULETTE
+  QUEST
 }
 
 enum WithdrawalStatus {
