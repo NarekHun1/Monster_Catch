@@ -54,7 +54,6 @@ export class GameController {
     );
   }
 
-
   @Post('daily-quests/claim')
   async claimDailyQuest(
     @Headers('authorization') authHeader?: string,

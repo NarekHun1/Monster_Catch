@@ -6,6 +6,7 @@ import {
   Headers,
   Query,
   BadRequestException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { TournamentService } from './tournament.service';
 import { TournamentType } from '@prisma/client';
@@ -59,8 +60,15 @@ export class TournamentController {
     @Headers('authorization') auth: string,
     @Body() body: { type: TournamentType; entry: 'TICKET' | 'COINS' },
   ) {
+    if (!auth) {
+      throw new UnauthorizedException('Missing Authorization header');
+    }
+
     const token = auth.replace('Bearer ', '');
-    return this.service.join(token, body.type);
+
+    const payWith = body.entry === 'TICKET' ? 'tickets' : 'coins';
+
+    return this.service.join(token, body.type, payWith);
   }
 
   // ─────────────────────────────────────
@@ -83,11 +91,7 @@ export class TournamentController {
 
     const token = this.extractToken(auth);
 
-    return this.service.submitScore(
-      token,
-      tournamentId,
-      score,
-    );
+    return this.service.submitScore(token, tournamentId, score);
   }
 
   // ─────────────────────────────────────

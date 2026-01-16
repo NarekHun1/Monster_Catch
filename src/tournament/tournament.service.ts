@@ -41,6 +41,44 @@ export class TournamentService {
       throw new UnauthorizedException('Invalid token');
     }
   }
+  private formatTournamentTitle(type: TournamentType) {
+    if (type === 'HOURLY') return '⏱ HOURLY';
+    if (type === 'DAILY') return '📅 DAILY';
+    return '💰 CASH CUP';
+  }
+
+  private formatPlace(place: 1 | 2 | 3) {
+    return place === 1
+      ? '🥇 1 место'
+      : place === 2
+        ? '🥈 2 место'
+        : '🥉 3 место';
+  }
+
+  private async safeSendTelegramMessage(telegramId: string, text: string) {
+    try {
+      await this.bot.telegram.sendMessage(telegramId, text);
+    } catch (e) {
+      this.logger.warn(`Failed to send message to ${telegramId}: ${String(e)}`);
+    }
+  }
+
+  private async notifyWinner(args: {
+    telegramId: string;
+    type: TournamentType;
+    place: 1 | 2 | 3;
+    prize: number;
+  }) {
+    const { telegramId, type, place, prize } = args;
+
+    const text =
+      `🎉 Поздравляем!\n` +
+      `${this.formatPlace(place)} в турнире ${this.formatTournamentTitle(type)}\n` +
+      `Ваш приз: 🪙 ${prize}\n\n` +
+      `Спасибо за игру! 🚀`;
+
+    await this.safeSendTelegramMessage(telegramId, text);
+  }
 
   // ───────────────── TIME HELPERS ─────────────────
   private floorToHour(d: Date) {
@@ -124,7 +162,11 @@ export class TournamentService {
   }
 
   // ───────────────── JOIN ─────────────────
-  async join(token: string, type: TournamentType) {
+  async join(
+    token: string,
+    type: TournamentType,
+    payWith: 'coins' | 'tickets' = 'coins',
+  ) {
     const userId = this.getUserIdFromToken(token);
     const tournament = await this.getOrCreateTournament(type);
 
@@ -140,32 +182,32 @@ export class TournamentService {
 
     if (exists) return { joined: false, tournamentId: tournament.id };
 
-    // 💰 CASH CUP (10 tickets OR 10 coins)
+    // ✅ CASH_CUP (10 tickets OR 10 coins) + prizePool
     if (tournament.type === 'CASH_CUP') {
-      const REQUIRED = tournament.entryFee; // 10
+      const REQUIRED = 10;
 
-      // 1️⃣ ПЫТАЕМСЯ ВОЙТИ ПО БИЛЕТАМ
-      const tickets = await this.prisma.ticket.findMany({
-        where: { userId, usedAt: null },
-        orderBy: { createdAt: 'asc' },
-        take: REQUIRED,
-      });
+      if (payWith === 'tickets') {
+        const tickets = await this.prisma.ticket.findMany({
+          where: { userId, usedAt: null },
+          orderBy: { createdAt: 'asc' },
+          take: REQUIRED,
+        });
 
-      if (tickets.length === REQUIRED) {
+        if (tickets.length < REQUIRED) {
+          throw new BadRequestException('Need 10 tickets');
+        }
+
         await this.prisma.$transaction([
-          // списываем РОВНО 10 билетов
           ...tickets.map((t) =>
             this.prisma.ticket.update({
               where: { id: t.id },
               data: { usedAt: new Date() },
             }),
           ),
-
           this.prisma.tournament.update({
             where: { id: tournament.id },
             data: { prizePool: { increment: REQUIRED } },
           }),
-
           this.prisma.tournamentParticipant.create({
             data: { userId, tournamentId: tournament.id },
           }),
@@ -174,14 +216,14 @@ export class TournamentService {
         return { joined: true, tournamentId: tournament.id, via: 'tickets' };
       }
 
-      // 2️⃣ ЕСЛИ БИЛЕТОВ МЕНЬШЕ 10 — ПРОБУЕМ COINS
+      // payWith === 'coins'
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
         select: { coins: true },
       });
 
       if (!user || user.coins < REQUIRED) {
-        throw new BadRequestException('Need 10 tickets or 10 coins');
+        throw new BadRequestException('Need 10 coins');
       }
 
       await this.prisma.$transaction([
@@ -200,40 +242,57 @@ export class TournamentService {
 
       return { joined: true, tournamentId: tournament.id, via: 'coins' };
     }
-    // 🎟 DAILY / HOURLY ticket entry
-    const ticket = await this.prisma.ticket.findFirst({
-      where: { userId, usedAt: null },
-    });
-    if (ticket) {
+
+    // ✅ HOURLY / DAILY
+    const REQUIRED = tournament.type === 'HOURLY' ? 50 : 100; // DAILY = 100
+
+    if (payWith === 'tickets') {
+      const tickets = await this.prisma.ticket.findMany({
+        where: { userId, usedAt: null },
+        orderBy: { createdAt: 'asc' },
+        take: REQUIRED,
+      });
+
+      if (tickets.length < REQUIRED) {
+        throw new BadRequestException(`Need ${REQUIRED} tickets`);
+      }
+
       await this.prisma.$transaction([
-        this.prisma.ticket.update({
-          where: { id: ticket.id },
-          data: { usedAt: new Date() },
-        }),
+        ...tickets.map((t) =>
+          this.prisma.ticket.update({
+            where: { id: t.id },
+            data: { usedAt: new Date() },
+          }),
+        ),
         this.prisma.tournamentParticipant.create({
           data: { userId, tournamentId: tournament.id },
         }),
       ]);
-      return { joined: true, tournamentId: tournament.id };
+
+      return { joined: true, tournamentId: tournament.id, via: 'tickets' };
     }
 
-    // 🪙 fallback coins
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user || user.coins < tournament.entryFee) {
-      throw new BadRequestException('Not enough coins');
+    // payWith === 'coins'
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { coins: true },
+    });
+
+    if (!user || user.coins < REQUIRED) {
+      throw new BadRequestException(`Need ${REQUIRED} coins`);
     }
 
     await this.prisma.$transaction([
       this.prisma.user.update({
         where: { id: userId },
-        data: { coins: { decrement: tournament.entryFee } },
+        data: { coins: { decrement: REQUIRED } },
       }),
       this.prisma.tournamentParticipant.create({
         data: { userId, tournamentId: tournament.id },
       }),
     ]);
 
-    return { joined: true, tournamentId: tournament.id };
+    return { joined: true, tournamentId: tournament.id, via: 'coins' };
   }
 
   // ───────────────── SUBMIT SCORE ─────────────────
@@ -273,13 +332,20 @@ export class TournamentService {
   async finishExpiredTournaments() {
     const tournaments = await this.prisma.tournament.findMany({
       where: { status: 'ACTIVE', endsAt: { lte: new Date() } },
-      include: { participants: true },
+      include: {
+        participants: {
+          include: {
+            user: { select: { telegramId: true } },
+          },
+        },
+      },
     });
 
     for (const t of tournaments) {
       const sorted = [...t.participants].sort((a, b) => b.score - a.score);
-      let prizes: number[] = [];
 
+      // призы как у тебя
+      let prizes: number[] = [];
       if (t.type === 'CASH_CUP') {
         prizes = this.calculateCashCupPrizes(t.prizePool, sorted.length);
       } else {
@@ -287,6 +353,7 @@ export class TournamentService {
         else if (sorted.length >= 2) prizes = [50];
       }
 
+      // начислить + закрыть
       const tx: Prisma.PrismaPromise<any>[] = [];
 
       sorted.slice(0, prizes.length).forEach((p, i) => {
@@ -306,6 +373,20 @@ export class TournamentService {
       );
 
       await this.prisma.$transaction(tx);
+
+      // ✅ уведомить топ-3 (только тем, у кого есть telegramId)
+      const top = sorted.slice(0, Math.min(3, prizes.length));
+      for (let i = 0; i < top.length; i++) {
+        const tg = top[i].user?.telegramId;
+        if (!tg) continue;
+
+        await this.notifyWinner({
+          telegramId: String(tg),
+          type: t.type as TournamentType,
+          place: (i + 1) as 1 | 2 | 3,
+          prize: prizes[i],
+        });
+      }
     }
 
     return tournaments.length;
