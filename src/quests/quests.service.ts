@@ -2,7 +2,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthService } from '../auth/auth.service';
-import { TicketType, UserQuestStatus } from '@prisma/client';
+import { QuestType, TicketType, UserQuestStatus } from '@prisma/client';
 import { InjectBot } from 'nestjs-telegraf';
 import { Telegraf } from 'telegraf';
 
@@ -15,19 +15,29 @@ export class QuestsService {
   ) {}
 
   private buildOpenUrl(q: {
+    type: QuestType;
+    openUrl?: string | null;
     inviteLink?: string | null;
     chatUsername?: string | null;
   }): string | null {
-    if (q.inviteLink) return q.inviteLink;
-    if (q.chatUsername) {
-      const uname = q.chatUsername.replace('@', '');
-      return `https://t.me/${uname}`;
+    // ✅ если задано openUrl — используем его (Instagram/любой URL)
+    if (q.openUrl) return q.openUrl;
+
+    // ✅ старое поведение для SUBSCRIBE
+    if (q.type === QuestType.SUBSCRIBE) {
+      if (q.inviteLink) return q.inviteLink;
+      if (q.chatUsername) {
+        const uname = q.chatUsername.replace('@', '');
+        return `https://t.me/${uname}`;
+      }
     }
+
     return null;
   }
 
   // ------------------------------
   // Список активных заданий + прогресс пользователя
+  // ✅ CLAIMED скрываем (задание исчезает)
   // ------------------------------
   async list(token: string) {
     const userId = this.auth.getUserIdFromToken(token);
@@ -42,6 +52,7 @@ export class QuestsService {
       select: {
         questId: true,
         status: true,
+        openedAt: true,
         completedAt: true,
         claimedAt: true,
       },
@@ -49,21 +60,55 @@ export class QuestsService {
 
     const map = new Map(progress.map((p) => [p.questId, p]));
 
-    return quests.map((q) => ({
-      id: q.id,
-      title: q.title,
-      description: q.description,
-      type: q.type,
-      rewardTickets: q.rewardTickets,
-      openUrl: this.buildOpenUrl(q),
-      // иногда полезно фронту показать username
-      chatUsername: q.chatUsername,
-      progress: map.get(q.id) ?? null,
-    }));
+    // ✅ фильтруем CLAIMED: если уже получил — не показываем
+    return quests
+      .filter((q) => {
+        const p = map.get(q.id);
+        return p?.status !== UserQuestStatus.CLAIMED;
+      })
+      .map((q) => ({
+        id: q.id,
+        title: q.title,
+        description: q.description,
+        type: q.type,
+        rewardTickets: q.rewardTickets,
+        openUrl: this.buildOpenUrl(q),
+        chatUsername: q.chatUsername,
+        progress: map.get(q.id) ?? null,
+      }));
   }
 
   // ------------------------------
-  // Verify: проверяем подписку на канал/чат
+  // Open: фиксируем, что юзер нажал "Выполнить"
+  // (для Instagram — обязательно, чтобы verify работал честнее)
+  // ------------------------------
+  async open(token: string, questId: number) {
+    const userId = this.auth.getUserIdFromToken(token);
+
+    const quest = await this.prisma.quest.findUnique({ where: { id: questId } });
+    if (!quest || !quest.isActive) throw new BadRequestException('QUEST_NOT_FOUND');
+
+    const uq = await this.prisma.userQuest.upsert({
+      where: { userId_questId: { userId, questId } },
+      update: {
+        // если уже COMPLETED/CLAIMED — не трогаем
+        openedAt: new Date(),
+      },
+      create: {
+        userId,
+        questId,
+        status: UserQuestStatus.PENDING,
+        openedAt: new Date(),
+      },
+    });
+
+    return { ok: true, status: uq.status };
+  }
+
+  // ------------------------------
+  // Verify:
+  // 1) SUBSCRIBE — проверяем подписку через getChatMember (как у тебя было)
+  // 2) INSTAGRAM_FOLLOW — MVP: open -> wait 12 sec -> COMPLETED
   // ------------------------------
   async verify(token: string, questId: number) {
     const userId = this.auth.getUserIdFromToken(token);
@@ -74,32 +119,23 @@ export class QuestsService {
     const quest = await this.prisma.quest.findUnique({ where: { id: questId } });
     if (!quest || !quest.isActive) throw new BadRequestException('QUEST_NOT_FOUND');
 
-    if (!quest.chatId && !quest.chatUsername)
-      throw new BadRequestException('QUEST_CHAT_NOT_SET');
-
-    // upsert прогресса
     const uq = await this.prisma.userQuest.upsert({
       where: { userId_questId: { userId, questId } },
       update: {},
       create: { userId, questId, status: UserQuestStatus.PENDING },
     });
 
-    // если уже забрал — ничего не делаем
     if (uq.status === UserQuestStatus.CLAIMED) {
       return { status: uq.status };
     }
 
-    // Telegram ID -> number
-    const tgUserId = Number(user.telegramId);
-    if (!Number.isFinite(tgUserId)) throw new BadRequestException('TELEGRAM_ID_INVALID');
+    // ✅ INSTAGRAM
+    if (quest.type === QuestType.INSTAGRAM_FOLLOW) {
+      // нужно чтобы open был нажат
+      if (!uq.openedAt) throw new BadRequestException('OPEN_INSTAGRAM_FIRST');
 
-    const chat = quest.chatId ?? quest.chatUsername!;
-
-    try {
-      const member = await this.bot.telegram.getChatMember(chat, tgUserId);
-
-      const ok = ['creator', 'administrator', 'member'].includes(member.status);
-      if (!ok) throw new BadRequestException('NOT_SUBSCRIBED');
+      const ms = Date.now() - new Date(uq.openedAt).getTime();
+      if (ms < 12_000) throw new BadRequestException('WAIT_A_BIT');
 
       const updated = await this.prisma.userQuest.update({
         where: { id: uq.id },
@@ -110,15 +146,44 @@ export class QuestsService {
       });
 
       return { status: updated.status };
-    } catch (e) {
-      // Часто бывает: бот не админ, чат приватный, chatId не тот, у канала нет доступа и т.д.
-      // Чтобы не сливать детали наружу — возвращаем общий код
-      throw new BadRequestException('SUBSCRIPTION_CHECK_FAILED');
     }
+
+    // ✅ TELEGRAM SUBSCRIBE
+    if (quest.type === QuestType.SUBSCRIBE) {
+      if (!quest.chatId && !quest.chatUsername) {
+        throw new BadRequestException('QUEST_CHAT_NOT_SET');
+      }
+
+      const tgUserId = Number(user.telegramId);
+      if (!Number.isFinite(tgUserId)) throw new BadRequestException('TELEGRAM_ID_INVALID');
+
+      const chat = quest.chatId ?? quest.chatUsername!;
+
+      try {
+        const member = await this.bot.telegram.getChatMember(chat, tgUserId);
+        const ok = ['creator', 'administrator', 'member'].includes(member.status);
+        if (!ok) throw new BadRequestException('NOT_SUBSCRIBED');
+
+        const updated = await this.prisma.userQuest.update({
+          where: { id: uq.id },
+          data: {
+            status: UserQuestStatus.COMPLETED,
+            completedAt: uq.completedAt ?? new Date(),
+          },
+        });
+
+        return { status: updated.status };
+      } catch (e) {
+        throw new BadRequestException('SUBSCRIPTION_CHECK_FAILED');
+      }
+    }
+
+    throw new BadRequestException('QUEST_TYPE_NOT_SUPPORTED');
   }
 
   // ------------------------------
-  // Claim: выдаем билеты (N штук), если verify уже прошел
+  // Claim: выдаем билеты (N штук)
+  // После CLAIM — list() уже НЕ вернет этот квест -> "исчезнет"
   // ------------------------------
   async claim(token: string, questId: number) {
     const userId = this.auth.getUserIdFromToken(token);
@@ -131,16 +196,12 @@ export class QuestsService {
     });
     if (!uq) throw new BadRequestException('QUEST_NOT_VERIFIED');
 
-    if (uq.status === UserQuestStatus.CLAIMED)
-      throw new BadRequestException('ALREADY_CLAIMED');
-
-    if (uq.status !== UserQuestStatus.COMPLETED)
-      throw new BadRequestException('QUEST_NOT_COMPLETED');
+    if (uq.status === UserQuestStatus.CLAIMED) throw new BadRequestException('ALREADY_CLAIMED');
+    if (uq.status !== UserQuestStatus.COMPLETED) throw new BadRequestException('QUEST_NOT_COMPLETED');
 
     const reward = Math.max(1, Number(quest.rewardTickets ?? 1));
 
     await this.prisma.$transaction(async (tx) => {
-      // ✅ быстро создаем N билетов одной операцией
       await tx.ticket.createMany({
         data: Array.from({ length: reward }, () => ({
           userId,
@@ -157,24 +218,12 @@ export class QuestsService {
       });
     });
 
-    return {
-      ok: true,
-      rewardTickets: reward,
-    };
+    return { ok: true, rewardTickets: reward };
   }
 
-  // ------------------------------
-  // (Опционально) Claim-одним-кликом: сам проверит подписку и выдаст
-  // ------------------------------
   async claimWithVerify(token: string, questId: number) {
-    // 1) verify
     const v = await this.verify(token, questId);
-
-    // 2) если verify ок — claim
-    if (v.status === UserQuestStatus.COMPLETED) {
-      return this.claim(token, questId);
-    }
-
+    if (v.status === UserQuestStatus.COMPLETED) return this.claim(token, questId);
     return { ok: false, status: v.status };
   }
 }

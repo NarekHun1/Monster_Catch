@@ -128,6 +128,7 @@ model Quest {
   chatId       String? // например "-1001234567890" или "@mychannel"
   chatUsername String? // "@mychannel" (удобно для ссылки)
   inviteLink   String? // если приватный канал/чат
+  openUrl      String?
 
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
@@ -143,9 +144,9 @@ model UserQuest {
   completedAt DateTime?
   claimedAt   DateTime?
   createdAt   DateTime        @default(now())
-
-  user  User  @relation(fields: [userId], references: [id])
-  quest Quest @relation(fields: [questId], references: [id])
+  openedAt    DateTime?
+  user        User            @relation(fields: [userId], references: [id])
+  quest       Quest           @relation(fields: [questId], references: [id])
 
   @@unique([userId, questId])
   @@index([userId, status])
@@ -153,6 +154,7 @@ model UserQuest {
 
 enum QuestType {
   SUBSCRIBE
+  INSTAGRAM_FOLLOW
 }
 
 enum UserQuestStatus {
