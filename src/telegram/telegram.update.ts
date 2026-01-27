@@ -1,8 +1,28 @@
+// src/telegram/telegram.update.ts
 import { Ctx, Start, Update, On } from 'nestjs-telegraf';
 import { Context } from 'telegraf';
 import { ConfigService } from '@nestjs/config';
 import { UserService } from '../user/user.service';
 import { PaymentService } from '../payments/payment.service';
+
+/* ───────────────────────────────────────────────
+   Safe Telegram send (ignore "bot was blocked")
+─────────────────────────────────────────────── */
+
+function isBotBlocked(err: any) {
+  const code = err?.response?.error_code;
+  const desc = String(err?.response?.description || '').toLowerCase();
+  return code === 403 && desc.includes('bot was blocked by the user');
+}
+
+async function safeTg<T>(fn: () => Promise<T>): Promise<T | null> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (isBotBlocked(e)) return null; // ✅ ignore 403 blocked
+    throw e; // ❗ let other errors bubble up
+  }
+}
 
 @Update()
 export class TelegramUpdate {
@@ -33,19 +53,18 @@ export class TelegramUpdate {
     if (
       ctx.message &&
       'text' in ctx.message &&
-      typeof ctx.message.text === 'string'
+      typeof (ctx.message as any).text === 'string'
     ) {
-      payload = ctx.message.text.split(' ')[1]; // ref_xxx
+      payload = (ctx.message as any).text.split(' ')[1]; // ref_xxx
     }
 
     // 3️⃣ Регистрируем реферал
     if (payload?.startsWith('ref_')) {
       const inviterTelegramId = payload.replace('ref_', '');
-
       await this.users.registerReferralByTelegramId(inviterTelegramId, user.id);
     }
 
-    // 4️⃣ Welcome сообщение (БЕЗ ИЗМЕНЕНИЙ)
+    // 4️⃣ Welcome сообщение
     const url =
       this.config.get('WEBAPP_URL') || 'https://monster-catch-front.vercel.app';
 
@@ -79,12 +98,15 @@ export class TelegramUpdate {
 а не от покупки коинов\\.
 `;
 
-    await ctx.reply(text, {
-      parse_mode: 'MarkdownV2',
-      reply_markup: {
-        inline_keyboard: [[{ text: '🎮 Играть', web_app: { url } }]],
-      },
-    });
+    // ✅ ВАЖНО: не даём 403 "bot blocked" валить обработчик
+    await safeTg(() =>
+      ctx.reply(text, {
+        parse_mode: 'MarkdownV2',
+        reply_markup: {
+          inline_keyboard: [[{ text: '🎮 Играть', web_app: { url } }]],
+        },
+      }),
+    );
   }
 
   // ───────────────────────────────
@@ -92,7 +114,8 @@ export class TelegramUpdate {
   // ───────────────────────────────
   @On('pre_checkout_query')
   async onPreCheckout(@Ctx() ctx: any) {
-    await ctx.answerPreCheckoutQuery(true);
+    // ✅ тоже можно обернуть на всякий, но обычно не надо
+    await safeTg(() => ctx.answerPreCheckoutQuery(true));
   }
 
   // ───────────────────────────────
@@ -105,14 +128,17 @@ export class TelegramUpdate {
 
     const packId = payment.invoice_payload.replace('buy_', '');
 
-    const packs = {
+    const packs: Record<string, number> = {
       coins_500: 100,
       coins_1000: 150,
       coins_2500: 300,
     };
 
     const coins = packs[packId];
-    if (!coins) return ctx.reply('Ошибка товара ❌');
+    if (!coins) {
+      await safeTg(() => ctx.reply('Ошибка товара ❌'));
+      return;
+    }
 
     await this.payments.registerPayment({
       telegramPaymentChargeId: payment.telegram_payment_charge_id,
@@ -122,6 +148,6 @@ export class TelegramUpdate {
       payload: payment.invoice_payload,
     });
 
-    await ctx.reply(`🎉 Успешно! +${coins} монет 🪙`);
+    await safeTg(() => ctx.reply(`🎉 Успешно! +${coins} монет 🪙`));
   }
 }
