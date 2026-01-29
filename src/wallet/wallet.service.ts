@@ -5,9 +5,9 @@ import { WithdrawalStatus } from '@prisma/client';
 import { AuthService } from '../auth/auth.service';
 import { TonService } from './ton.service';
 
-const COIN_PRICE_USD = 0.02;
+const COIN_PRICE_USD = 0.006;
 const MIN_WITHDRAW_USD = 1;
-const COIN_PRICE_TON = 0.02;
+const COIN_PRICE_TON = 0.006;
 
 @Injectable()
 export class WalletService {
