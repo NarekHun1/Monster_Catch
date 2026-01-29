@@ -6,7 +6,7 @@ import { AuthService } from '../auth/auth.service';
 import { TonService } from './ton.service';
 
 const COIN_PRICE_USD = 0.006;
-const MIN_WITHDRAW_USD = 1;
+const MIN_WITHDRAW_USD = 0.30;
 const COIN_PRICE_TON = 0.006;
 
 @Injectable()
