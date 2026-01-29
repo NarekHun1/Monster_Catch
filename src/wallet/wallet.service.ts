@@ -6,7 +6,7 @@ import { AuthService } from '../auth/auth.service';
 import { TonService } from './ton.service';
 
 const COIN_PRICE_USD = 0.006;
-const MIN_WITHDRAW_USD = 0.30;
+const MIN_WITHDRAW_USD = 0.3;
 const COIN_PRICE_TON = 0.006;
 
 @Injectable()
@@ -125,8 +125,7 @@ export class WalletService {
     // 3️⃣ Проверка DEPLOY для TON перед списанием
     if (params.currency === 'TON') {
       const deployed = await this.tonService.isWalletDeployed(address);
-      if (!deployed)
-        throw new BadRequestException('TON_WALLET_NOT_ACTIVATED');
+      if (!deployed) throw new BadRequestException('TON_WALLET_NOT_ACTIVATED');
     }
 
     // 4️⃣ Создаем запись и списываем монеты
