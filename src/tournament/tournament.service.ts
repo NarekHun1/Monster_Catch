@@ -311,7 +311,6 @@ export class TournamentService {
       }),
     ]);
 
-
     return { joined: true, tournamentId: tournament.id, via: 'coins' };
   }
 
@@ -453,6 +452,14 @@ export class TournamentService {
       orderBy: { score: 'desc' },
       take: 20,
     });
+    const now = new Date();
+
+    const timeLeftMs = Math.max(0, tournament.endsAt.getTime() - now.getTime());
+
+    const joinLeftMs = Math.max(
+      0,
+      tournament.joinDeadline.getTime() - now.getTime(),
+    );
 
     return {
       tournamentId: tournament.id,
@@ -463,6 +470,11 @@ export class TournamentService {
       joinDeadline: tournament.joinDeadline,
       entryFee: tournament.entryFee,
       prizePool: tournament.prizePool,
+
+      timeLeftMs,
+      timeLeftSec: Math.ceil(timeLeftMs / 1000),
+      joinLeftMs,
+      joinLeftSec: Math.ceil(joinLeftMs / 1000),
 
       joined,
       coins,
