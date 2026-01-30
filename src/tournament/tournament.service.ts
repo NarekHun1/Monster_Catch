@@ -122,10 +122,15 @@ export class TournamentService {
 
     if (type === 'HOURLY') {
       startsAt = this.floorToHour(now);
-      joinDeadline = new Date(startsAt);
-      joinDeadline.setMinutes(10, 0, 0);
+
+      // ✅ длится 1 час
       endsAt = new Date(startsAt);
-      endsAt.setMinutes(20, 0, 0);
+      endsAt.setHours(endsAt.getHours() + 1);
+
+      // ✅ вход весь час
+      joinDeadline = new Date(endsAt);
+
+      entryFee = 50;
     } else if (type === 'DAILY') {
       startsAt = this.floorToDay(now);
       endsAt = new Date(startsAt);
