@@ -269,6 +269,13 @@ export class TournamentService {
             data: { usedAt: new Date() },
           }),
         ),
+
+        // ✅ ДОБАВИТЬ: увеличиваем призовой фонд
+        this.prisma.tournament.update({
+          where: { id: tournament.id },
+          data: { prizePool: { increment: REQUIRED } },
+        }),
+
         this.prisma.tournamentParticipant.create({
           data: { userId, tournamentId: tournament.id },
         }),
@@ -292,10 +299,18 @@ export class TournamentService {
         where: { id: userId },
         data: { coins: { decrement: REQUIRED } },
       }),
+
+      // ✅ ДОБАВИТЬ: увеличиваем призовой фонд
+      this.prisma.tournament.update({
+        where: { id: tournament.id },
+        data: { prizePool: { increment: REQUIRED } },
+      }),
+
       this.prisma.tournamentParticipant.create({
         data: { userId, tournamentId: tournament.id },
       }),
     ]);
+
 
     return { joined: true, tournamentId: tournament.id, via: 'coins' };
   }

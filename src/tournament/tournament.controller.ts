@@ -58,18 +58,17 @@ export class TournamentController {
   @Post('join')
   join(
     @Headers('authorization') auth: string,
-    @Body() body: { type: TournamentType; entry: 'TICKET' | 'COINS' },
+    @Body() body: { type: TournamentType; payWith?: 'tickets' | 'coins' },
   ) {
-    if (!auth) {
-      throw new UnauthorizedException('Missing Authorization header');
-    }
+    if (!auth) throw new UnauthorizedException('Missing Authorization header');
 
     const token = auth.replace('Bearer ', '');
 
-    const payWith = body.entry === 'TICKET' ? 'tickets' : 'coins';
+    const payWith = body.payWith === 'tickets' ? 'tickets' : 'coins';
 
     return this.service.join(token, body.type, payWith);
   }
+
 
   // ─────────────────────────────────────
   // ОТПРАВКА СЧЁТА В ТУРНИР
