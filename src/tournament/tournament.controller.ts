@@ -64,11 +64,25 @@ export class TournamentController {
 
     const token = auth.replace('Bearer ', '');
 
-    const payWith = body.payWith === 'tickets' ? 'tickets' : 'coins';
+    // ❌ НЕ нормализуем в coins молча
+    const payWith = body.payWith;
 
-    return this.service.join(token, body.type, payWith);
+    // ✅ для CASH_CUP payWith обязателен
+    if (body.type === 'CASH_CUP' && !payWith) {
+      throw new BadRequestException(
+        'payWith is required for CASH_CUP (tickets | coins)',
+      );
+    }
+
+    // ✅ строгая валидация
+    if (payWith && payWith !== 'tickets' && payWith !== 'coins') {
+      throw new BadRequestException(
+        'payWith must be tickets or coins',
+      );
+    }
+
+    return this.service.join(token, body.type, payWith ?? 'coins');
   }
-
 
   // ─────────────────────────────────────
   // ОТПРАВКА СЧЁТА В ТУРНИР
