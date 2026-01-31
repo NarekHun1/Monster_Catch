@@ -1,5 +1,5 @@
 // src/telegram/telegram.update.ts
-import { Ctx, Start, Update, On } from 'nestjs-telegraf';
+import { Ctx, Start, Update, On, Action } from 'nestjs-telegraf';
 import { Context } from 'telegraf';
 import { ConfigService } from '@nestjs/config';
 import { UserService } from '../user/user.service';
@@ -19,10 +19,58 @@ async function safeTg<T>(fn: () => Promise<T>): Promise<T | null> {
   try {
     return await fn();
   } catch (e) {
-    if (isBotBlocked(e)) return null; // ✅ ignore 403 blocked
-    throw e; // ❗ let other errors bubble up
+    if (isBotBlocked(e)) return null;
+    throw e;
   }
 }
+
+function escMdV2(s: string) {
+  // MarkdownV2 escape
+  return s.replace(/[_*\[\]()~`>#+\-=|{}.!\\]/g, '\\$&');
+}
+
+// ───────────────────────────────────────────────
+// TEXTS (source as normal text → escaped to MarkdownV2)
+// ───────────────────────────────────────────────
+
+const START_RAW = `
+👾 Добро пожаловать в MONSTER CATCH!
+
+Telegram-игра, где ты
+🎮 играешь
+🏆 участвуешь в турнирах
+💎 и получаешь призы в TON
+`.trim();
+
+const HOW_TO_PLAY_RAW = `
+🎮 Как играть
+
+⭐️ ИГРАЙ БЕСПЛАТНО
+— Лови монстров
+— Зарабатывай ⭐ звёзды
+— Обменивай их на 🎟 билеты
+— Участвуй в турнирах
+
+💳 ХОЧЕШЬ БЫСТРЕЕ?
+— Покупай игровые 🪙 коины
+— Заходи в турниры сразу
+
+━━━━━━━━━━━━━━━
+🏆 ТУРНИРЫ И ПРИЗЫ
+
+🥇 1 место — 40% фонда
+🥈 2 место — 20%
+🥉 3 место — 10%
+
+💎 Призы выплачиваются в TON
+
+━━━━━━━━━━━━━━━
+👛 Вывод средств
+Подключай любой TON-кошелёк
+и выводи заработанные призы
+
+⚠️ Победа зависит от навыков и активности
+`.trim();
 
 @Update()
 export class TelegramUpdate {
@@ -40,70 +88,68 @@ export class TelegramUpdate {
     const tgUser = ctx.from;
     if (!tgUser) return;
 
-    // 1️⃣ Upsert пользователя из Telegram
+    // 1️⃣ Upsert user
     const user = await this.users.upsertFromTelegram({
       id: tgUser.id,
       username: tgUser.username,
       first_name: tgUser.first_name,
     });
 
-    // 2️⃣ Безопасно читаем payload (/start ref_xxx)
+    // 2️⃣ payload (/start ref_xxx)
     let payload: string | undefined;
-
     if (
       ctx.message &&
       'text' in ctx.message &&
       typeof (ctx.message as any).text === 'string'
     ) {
-      payload = (ctx.message as any).text.split(' ')[1]; // ref_xxx
+      payload = (ctx.message as any).text.split(' ')[1];
     }
 
-    // 3️⃣ Регистрируем реферал
+    // 3️⃣ referral
     if (payload?.startsWith('ref_')) {
       const inviterTelegramId = payload.replace('ref_', '');
       await this.users.registerReferralByTelegramId(inviterTelegramId, user.id);
     }
 
-    // 4️⃣ Welcome сообщение
-    const url =
+    // 4️⃣ urls
+    const webAppUrl =
       this.config.get('WEBAPP_URL') || 'https://monster-catch-front.vercel.app';
 
-    const text = `
-👾 *Добро пожаловать в MONSTER CATCH\\!*
+    const channelUrl = 'https://t.me/monstercatchgame';
 
-Лови монстров, прокачивайся  
-и участвуй в турнирах за реальные призы 💎
-
-━━━━━━━━━━━━━━━
-🎮 *Как участвовать*
-
-⭐️ *ИГРАЙ БЕСПЛАТНО*
-— Лови монстров  
-— Зарабатывай ⭐ звёзды  
-— Покупай билет в турнир  
-
-💳 *УСКОРЬ ПРОГРЕСС*
-— Покупай игровые 🪙 коины  
-— Используй коины для билетов  
-— Участвуй в турнирах быстрее  
-
-━━━━━━━━━━━━━━━
-🏆 *ТУРНИРЫ*
-— Соревнуйся с игроками  
-— Попади в топ рейтинга  
-— Получай награды в *TON 💎*
-
-⚠️ *Важно:*  
-Победа зависит от навыков и активности,  
-а не от покупки коинов\\.
-`;
-
-    // ✅ ВАЖНО: не даём 403 "bot blocked" валить обработчик
+    // 5️⃣ start message + buttons
     await safeTg(() =>
-      ctx.reply(text, {
+      ctx.reply(escMdV2(START_RAW), {
         parse_mode: 'MarkdownV2',
         reply_markup: {
-          inline_keyboard: [[{ text: '🎮 Играть', web_app: { url } }]],
+          inline_keyboard: [
+            [{ text: '🎮 Играть', web_app: { url: webAppUrl } }],
+            [{ text: '📣 Подписаться на канал', url: channelUrl }],
+            [{ text: '❓ Как играть', callback_data: 'HOW_TO_PLAY' }],
+          ],
+        },
+      }),
+    );
+  }
+
+  // ───────────────────────────────
+  // HOW TO PLAY (callback)
+  // ───────────────────────────────
+  @Action('HOW_TO_PLAY')
+  async onHowToPlay(@Ctx() ctx: any) {
+    // убрать "часики" на кнопке
+    await safeTg(() => ctx.answerCbQuery());
+
+    const webAppUrl =
+      this.config.get('WEBAPP_URL') || 'https://monster-catch-front.vercel.app';
+
+    await safeTg(() =>
+      ctx.reply(escMdV2(HOW_TO_PLAY_RAW), {
+        parse_mode: 'MarkdownV2',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🎮 Играть', web_app: { url: webAppUrl } }],
+          ],
         },
       }),
     );
@@ -114,7 +160,6 @@ export class TelegramUpdate {
   // ───────────────────────────────
   @On('pre_checkout_query')
   async onPreCheckout(@Ctx() ctx: any) {
-    // ✅ тоже можно обернуть на всякий, но обычно не надо
     await safeTg(() => ctx.answerPreCheckoutQuery(true));
   }
 
