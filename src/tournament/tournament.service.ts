@@ -166,152 +166,254 @@ export class TournamentService {
     return tournament;
   }
 
-  // ───────────────── JOIN ─────────────────
   async join(
     token: string,
     type: TournamentType,
-    payWith: 'coins' | 'tickets' = 'coins',
+    payWith?: 'coins' | 'tickets',
   ) {
     const userId = this.getUserIdFromToken(token);
+
+    this.logger.log(
+      `[JOIN] request userId=${userId} type=${type} payWith=${payWith}`,
+    );
+
+    // CASH_CUP: payWith обязателен
+    if (type === 'CASH_CUP' && !payWith) {
+      this.logger.warn(
+        `[JOIN][ERROR] CASH_CUP without payWith userId=${userId}`,
+      );
+      throw new BadRequestException(
+        'payWith is required for CASH_CUP (coins|tickets)',
+      );
+    }
+
+    const method: 'coins' | 'tickets' = payWith ?? 'coins';
+
+    if (method !== 'coins' && method !== 'tickets') {
+      this.logger.warn(
+        `[JOIN][ERROR] invalid payWith=${payWith} userId=${userId}`,
+      );
+      throw new BadRequestException('payWith must be coins or tickets');
+    }
+
+    this.logger.log(`[JOIN] normalized method=${method} userId=${userId}`);
+
     const tournament = await this.getOrCreateTournament(type);
 
+    this.logger.log(
+      `[JOIN] tournament id=${tournament.id} type=${tournament.type} status=${tournament.status}`,
+    );
+
     if (tournament.status === 'FINISHED') {
+      this.logger.warn(`[JOIN][ERROR] tournament finished id=${tournament.id}`);
       throw new BadRequestException('Tournament finished');
     }
 
-    const exists = await this.prisma.tournamentParticipant.findUnique({
-      where: {
-        userId_tournamentId: { userId, tournamentId: tournament.id },
-      },
-    });
+    try {
+      // ───────────────── CASH CUP ─────────────────
+      if (tournament.type === 'CASH_CUP') {
+        const REQUIRED = 10;
 
-    if (exists) return { joined: false, tournamentId: tournament.id };
+        return await this.prisma.$transaction(async (tx) => {
+          const exists = await tx.tournamentParticipant.findUnique({
+            where: {
+              userId_tournamentId: { userId, tournamentId: tournament.id },
+            },
+          });
 
-    // ✅ CASH_CUP (10 tickets OR 10 coins) + prizePool
-    if (tournament.type === 'CASH_CUP') {
-      const REQUIRED = 10;
+          if (exists) {
+            this.logger.log(
+              `[JOIN] already joined CASH_CUP userId=${userId} tournamentId=${tournament.id}`,
+            );
+            return { joined: false, tournamentId: tournament.id };
+          }
 
-      if (payWith === 'tickets') {
-        const tickets = await this.prisma.ticket.findMany({
-          where: { userId, usedAt: null },
-          orderBy: { createdAt: 'asc' },
-          take: REQUIRED,
-        });
+          if (method === 'tickets') {
+            const tickets = await tx.ticket.findMany({
+              where: { userId, usedAt: null },
+              orderBy: { createdAt: 'asc' },
+              take: REQUIRED,
+            });
 
-        if (tickets.length < REQUIRED) {
-          throw new BadRequestException('Need 10 tickets');
-        }
+            this.logger.log(
+              `[JOIN][CASH_CUP] tickets found=${tickets.length} userId=${userId}`,
+            );
 
-        await this.prisma.$transaction([
-          ...tickets.map((t) =>
-            this.prisma.ticket.update({
-              where: { id: t.id },
-              data: { usedAt: new Date() },
-            }),
-          ),
-          this.prisma.tournament.update({
+            if (tickets.length < REQUIRED) {
+              this.logger.warn(
+                `[JOIN][CASH_CUP][ERROR] not enough tickets userId=${userId}`,
+              );
+              throw new BadRequestException('Need 10 tickets');
+            }
+
+            for (const t of tickets) {
+              await tx.ticket.update({
+                where: { id: t.id },
+                data: { usedAt: new Date() },
+              });
+            }
+
+            await tx.tournament.update({
+              where: { id: tournament.id },
+              data: { prizePool: { increment: REQUIRED } },
+            });
+
+            await tx.tournamentParticipant.create({
+              data: { userId, tournamentId: tournament.id },
+            });
+
+            this.logger.log(
+              `[JOIN][CASH_CUP] SUCCESS via=tickets userId=${userId}`,
+            );
+
+            return {
+              joined: true,
+              tournamentId: tournament.id,
+              via: 'tickets',
+            };
+          }
+
+          // coins
+          const u = await tx.user.findUnique({
+            where: { id: userId },
+            select: { coins: true },
+          });
+
+          this.logger.log(
+            `[JOIN][CASH_CUP] coins balance=${u?.coins} userId=${userId}`,
+          );
+
+          if (!u || u.coins < REQUIRED) {
+            this.logger.warn(
+              `[JOIN][CASH_CUP][ERROR] not enough coins userId=${userId}`,
+            );
+            throw new BadRequestException('Need 10 coins');
+          }
+
+          await tx.user.update({
+            where: { id: userId },
+            data: { coins: { decrement: REQUIRED } },
+          });
+
+          await tx.tournament.update({
             where: { id: tournament.id },
             data: { prizePool: { increment: REQUIRED } },
-          }),
-          this.prisma.tournamentParticipant.create({
+          });
+
+          await tx.tournamentParticipant.create({
             data: { userId, tournamentId: tournament.id },
-          }),
-        ]);
+          });
 
-        return { joined: true, tournamentId: tournament.id, via: 'tickets' };
+          this.logger.log(
+            `[JOIN][CASH_CUP] SUCCESS via=coins userId=${userId}`,
+          );
+
+          return { joined: true, tournamentId: tournament.id, via: 'coins' };
+        });
       }
 
-      // payWith === 'coins'
-      const user = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: { coins: true },
-      });
+      // ─────────────── HOURLY / DAILY ───────────────
+      const REQUIRED = tournament.type === 'HOURLY' ? 50 : 100;
 
-      if (!user || user.coins < REQUIRED) {
-        throw new BadRequestException('Need 10 coins');
-      }
+      return await this.prisma.$transaction(async (tx) => {
+        const exists = await tx.tournamentParticipant.findUnique({
+          where: {
+            userId_tournamentId: { userId, tournamentId: tournament.id },
+          },
+        });
 
-      await this.prisma.$transaction([
-        this.prisma.user.update({
+        if (exists) {
+          this.logger.log(
+            `[JOIN] already joined ${tournament.type} userId=${userId}`,
+          );
+          return { joined: false, tournamentId: tournament.id };
+        }
+
+        if (method === 'tickets') {
+          const tickets = await tx.ticket.findMany({
+            where: { userId, usedAt: null },
+            orderBy: { createdAt: 'asc' },
+            take: REQUIRED,
+          });
+
+          this.logger.log(
+            `[JOIN][${tournament.type}] tickets found=${tickets.length} userId=${userId}`,
+          );
+
+          if (tickets.length < REQUIRED) {
+            throw new BadRequestException(`Need ${REQUIRED} tickets`);
+          }
+
+          for (const t of tickets) {
+            await tx.ticket.update({
+              where: { id: t.id },
+              data: { usedAt: new Date() },
+            });
+          }
+
+          await tx.tournament.update({
+            where: { id: tournament.id },
+            data: { prizePool: { increment: REQUIRED } },
+          });
+
+          await tx.tournamentParticipant.create({
+            data: { userId, tournamentId: tournament.id },
+          });
+
+          this.logger.log(
+            `[JOIN][${tournament.type}] SUCCESS via=tickets userId=${userId}`,
+          );
+
+          return { joined: true, tournamentId: tournament.id, via: 'tickets' };
+        }
+
+        const u = await tx.user.findUnique({
+          where: { id: userId },
+          select: { coins: true },
+        });
+
+        this.logger.log(
+          `[JOIN][${tournament.type}] coins balance=${u?.coins} userId=${userId}`,
+        );
+
+        if (!u || u.coins < REQUIRED) {
+          throw new BadRequestException(`Need ${REQUIRED} coins`);
+        }
+
+        await tx.user.update({
           where: { id: userId },
           data: { coins: { decrement: REQUIRED } },
-        }),
-        this.prisma.tournament.update({
+        });
+
+        await tx.tournament.update({
           where: { id: tournament.id },
           data: { prizePool: { increment: REQUIRED } },
-        }),
-        this.prisma.tournamentParticipant.create({
+        });
+
+        await tx.tournamentParticipant.create({
           data: { userId, tournamentId: tournament.id },
-        }),
-      ]);
+        });
 
-      return { joined: true, tournamentId: tournament.id, via: 'coins' };
-    }
+        this.logger.log(
+          `[JOIN][${tournament.type}] SUCCESS via=coins userId=${userId}`,
+        );
 
-    // ✅ HOURLY / DAILY
-    const REQUIRED = tournament.type === 'HOURLY' ? 50 : 100; // DAILY = 100
-
-    if (payWith === 'tickets') {
-      const tickets = await this.prisma.ticket.findMany({
-        where: { userId, usedAt: null },
-        orderBy: { createdAt: 'asc' },
-        take: REQUIRED,
+        return { joined: true, tournamentId: tournament.id, via: 'coins' };
       });
-
-      if (tickets.length < REQUIRED) {
-        throw new BadRequestException(`Need ${REQUIRED} tickets`);
+    } catch (e: any) {
+      // защита от гонки
+      if (e?.code === 'P2002') {
+        this.logger.warn(
+          `[JOIN][RACE] participant already exists userId=${userId}`,
+        );
+        return { joined: false, tournamentId: tournament.id };
       }
 
-      await this.prisma.$transaction([
-        ...tickets.map((t) =>
-          this.prisma.ticket.update({
-            where: { id: t.id },
-            data: { usedAt: new Date() },
-          }),
-        ),
-
-        // ✅ ДОБАВИТЬ: увеличиваем призовой фонд
-        this.prisma.tournament.update({
-          where: { id: tournament.id },
-          data: { prizePool: { increment: REQUIRED } },
-        }),
-
-        this.prisma.tournamentParticipant.create({
-          data: { userId, tournamentId: tournament.id },
-        }),
-      ]);
-
-      return { joined: true, tournamentId: tournament.id, via: 'tickets' };
+      this.logger.error(
+        `[JOIN][FATAL] userId=${userId} error=${e?.message ?? e}`,
+      );
+      throw e;
     }
-
-    // payWith === 'coins'
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { coins: true },
-    });
-
-    if (!user || user.coins < REQUIRED) {
-      throw new BadRequestException(`Need ${REQUIRED} coins`);
-    }
-
-    await this.prisma.$transaction([
-      this.prisma.user.update({
-        where: { id: userId },
-        data: { coins: { decrement: REQUIRED } },
-      }),
-
-      // ✅ ДОБАВИТЬ: увеличиваем призовой фонд
-      this.prisma.tournament.update({
-        where: { id: tournament.id },
-        data: { prizePool: { increment: REQUIRED } },
-      }),
-
-      this.prisma.tournamentParticipant.create({
-        data: { userId, tournamentId: tournament.id },
-      }),
-    ]);
-
-    return { joined: true, tournamentId: tournament.id, via: 'coins' };
   }
 
   // ───────────────── SUBMIT SCORE ─────────────────
