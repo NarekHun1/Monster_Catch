@@ -61,10 +61,22 @@ export class TournamentController {
     @Body() body: { type: TournamentType; payWith?: 'tickets' | 'coins' },
   ) {
     if (!auth) throw new UnauthorizedException('Missing Authorization header');
-
     const token = auth.replace('Bearer ', '');
 
-    const payWith = body.payWith === 'tickets' ? 'tickets' : 'coins';
+    // ✅ просто берем как есть
+    const payWith = body.payWith;
+
+    // ✅ если CASH_CUP — payWith обязателен
+    if (body.type === 'CASH_CUP' && !payWith) {
+      throw new BadRequestException(
+        'payWith is required for CASH_CUP (coins|tickets)',
+      );
+    }
+
+    // ✅ если payWith пришёл — провалидируем
+    if (payWith && payWith !== 'tickets' && payWith !== 'coins') {
+      throw new BadRequestException('payWith must be coins or tickets');
+    }
 
     return this.service.join(token, body.type, payWith);
   }
