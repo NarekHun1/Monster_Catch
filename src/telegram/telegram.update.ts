@@ -27,6 +27,7 @@ async function safeTg<T>(fn: () => Promise<T>): Promise<T | null> {
   } catch (e: any) {
     if (isBotBlocked(e)) return null;
     if (isMessageNotModified(e)) return null;
+
     // чтобы ты видел реальную ошибку в логах
     console.error('[TG ERROR]', e?.response || e);
     throw e;
@@ -150,19 +151,13 @@ export class TelegramUpdate {
     console.log('[BOT] WEBAPP_URL env =', envUrl);
     console.log('[BOT] WEBAPP_URL used =', webAppUrl);
 
-    // 5) message + buttons
+    // 5) start message + buttons (без браузера)
     await safeTg(() =>
       ctx.reply(escMdV2(START_RAW), {
         parse_mode: 'MarkdownV2',
         reply_markup: {
           inline_keyboard: [
-            // ✅ WebApp (в Telegram)
             [{ text: '🎮 Играть', web_app: { url: webAppUrl } }],
-
-            // ✅ Диагностика: открытие обычной ссылкой
-            // Если это открывается, а WebApp — нет → проблема setdomain/клиент Telegram
-            [{ text: '🌐 Открыть в браузере', url: webAppUrl }],
-
             [{ text: '📣 Подписаться на канал', url: channelUrl }],
             [{ text: '❓ Как играть', callback_data: 'HOW_TO_PLAY' }],
           ],
@@ -186,10 +181,7 @@ export class TelegramUpdate {
       ctx.reply(escMdV2(HOW_TO_PLAY_RAW), {
         parse_mode: 'MarkdownV2',
         reply_markup: {
-          inline_keyboard: [
-            [{ text: '🎮 Играть', web_app: { url: webAppUrl } }],
-            [{ text: '🌐 Открыть в браузере', url: webAppUrl }],
-          ],
+          inline_keyboard: [[{ text: '🎮 Играть', web_app: { url: webAppUrl } }]],
         },
       }),
     );
@@ -213,8 +205,6 @@ export class TelegramUpdate {
 
     const packId = payment.invoice_payload.replace('buy_', '');
 
-    // ⚠️ ТУТ У ТЕБЯ БЫЛО: coins_500: 100 (это странно)
-    // Я оставляю как есть, но можешь поменять на реальное соответствие.
     const packs: Record<string, number> = {
       coins_500: 100,
       coins_1000: 150,
