@@ -15,11 +15,20 @@ function isBotBlocked(err: any) {
   return code === 403 && desc.includes('bot was blocked by the user');
 }
 
+function isMessageNotModified(err: any) {
+  const code = err?.response?.error_code;
+  const desc = String(err?.response?.description || '').toLowerCase();
+  return code === 400 && desc.includes('message is not modified');
+}
+
 async function safeTg<T>(fn: () => Promise<T>): Promise<T | null> {
   try {
     return await fn();
-  } catch (e) {
+  } catch (e: any) {
     if (isBotBlocked(e)) return null;
+    if (isMessageNotModified(e)) return null;
+    // чтобы ты видел реальную ошибку в логах
+    console.error('[TG ERROR]', e?.response || e);
     throw e;
   }
 }
@@ -29,9 +38,30 @@ function escMdV2(s: string) {
   return s.replace(/[_*\[\]()~`>#+\-=|{}.!\\]/g, '\\$&');
 }
 
-// ───────────────────────────────────────────────
-// TEXTS (source as normal text → escaped to MarkdownV2)
-// ───────────────────────────────────────────────
+/* ───────────────────────────────────────────────
+   URL normalize (Telegram WebApp любит только https)
+─────────────────────────────────────────────── */
+
+function normalizeWebAppUrl(input: string | undefined | null) {
+  const raw = String(input || '').trim();
+
+  // дефолт
+  const fallback = 'https://monster-catch-front.vercel.app';
+
+  if (!raw) return fallback;
+
+  // убираем случайные пробелы/переносы
+  const url = raw.replace(/\s+/g, '');
+
+  // Telegram WebApp: почти всегда нужен https
+  if (!url.startsWith('https://')) return fallback;
+
+  return url;
+}
+
+/* ───────────────────────────────────────────────
+   TEXTS
+─────────────────────────────────────────────── */
 
 const START_RAW = `
 👾 Добро пожаловать в MONSTER CATCH!
@@ -89,14 +119,14 @@ export class TelegramUpdate {
     const tgUser = ctx.from;
     if (!tgUser) return;
 
-    // 1️⃣ Upsert user
+    // 1) Upsert user
     const user = await this.users.upsertFromTelegram({
       id: tgUser.id,
       username: tgUser.username,
       first_name: tgUser.first_name,
     });
 
-    // 2️⃣ payload (/start ref_xxx)
+    // 2) payload (/start ref_xxx)
     let payload: string | undefined;
     if (
       ctx.message &&
@@ -106,25 +136,33 @@ export class TelegramUpdate {
       payload = (ctx.message as any).text.split(' ')[1];
     }
 
-    // 3️⃣ referral
+    // 3) referral
     if (payload?.startsWith('ref_')) {
       const inviterTelegramId = payload.replace('ref_', '');
       await this.users.registerReferralByTelegramId(inviterTelegramId, user.id);
     }
 
-    // 4️⃣ urls
-    const webAppUrl =
-      this.config.get('WEBAPP_URL') || 'https://monster-catch-front.vercel.app';
-
+    // 4) urls
+    const envUrl = this.config.get<string>('WEBAPP_URL');
+    const webAppUrl = normalizeWebAppUrl(envUrl);
     const channelUrl = 'https://t.me/monstercatchgame';
 
-    // 5️⃣ start message + buttons
+    console.log('[BOT] WEBAPP_URL env =', envUrl);
+    console.log('[BOT] WEBAPP_URL used =', webAppUrl);
+
+    // 5) message + buttons
     await safeTg(() =>
       ctx.reply(escMdV2(START_RAW), {
         parse_mode: 'MarkdownV2',
         reply_markup: {
           inline_keyboard: [
+            // ✅ WebApp (в Telegram)
             [{ text: '🎮 Играть', web_app: { url: webAppUrl } }],
+
+            // ✅ Диагностика: открытие обычной ссылкой
+            // Если это открывается, а WebApp — нет → проблема setdomain/клиент Telegram
+            [{ text: '🌐 Открыть в браузере', url: webAppUrl }],
+
             [{ text: '📣 Подписаться на канал', url: channelUrl }],
             [{ text: '❓ Как играть', callback_data: 'HOW_TO_PLAY' }],
           ],
@@ -141,8 +179,8 @@ export class TelegramUpdate {
     // убрать "часики" на кнопке
     await safeTg(() => ctx.answerCbQuery());
 
-    const webAppUrl =
-      this.config.get('WEBAPP_URL') || 'https://monster-catch-front.vercel.app';
+    const envUrl = this.config.get<string>('WEBAPP_URL');
+    const webAppUrl = normalizeWebAppUrl(envUrl);
 
     await safeTg(() =>
       ctx.reply(escMdV2(HOW_TO_PLAY_RAW), {
@@ -150,6 +188,7 @@ export class TelegramUpdate {
         reply_markup: {
           inline_keyboard: [
             [{ text: '🎮 Играть', web_app: { url: webAppUrl } }],
+            [{ text: '🌐 Открыть в браузере', url: webAppUrl }],
           ],
         },
       }),
@@ -174,6 +213,8 @@ export class TelegramUpdate {
 
     const packId = payment.invoice_payload.replace('buy_', '');
 
+    // ⚠️ ТУТ У ТЕБЯ БЫЛО: coins_500: 100 (это странно)
+    // Я оставляю как есть, но можешь поменять на реальное соответствие.
     const packs: Record<string, number> = {
       coins_500: 100,
       coins_1000: 150,
