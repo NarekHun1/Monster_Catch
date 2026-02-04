@@ -30,6 +30,7 @@ export class GameService {
 
     console.log('🚨 USER BLOCKED:', { userId, reason });
   }
+
   /** Достаём userId из JWT-токена */
   private getUserIdFromToken(token: string): number {
     if (!token) {
@@ -120,7 +121,7 @@ export class GameService {
     };
   }
 
-  /** Завершить игру: сохранить score, clicks, epicCount, finishedAt + начислить звёзды, XP и реф.награду */
+  /** Завершить игру: сохранить score, clicks, epicCount, finishedAt + начислить звёзды, XP, мясо и реф.награду */
   async finishGame(
     token: string,
     gameId: number,
@@ -143,6 +144,7 @@ export class GameService {
         xp: true,
         stars: true,
         telegramId: true,
+        meat: true, // ✅ добавили (можно не обязательно, но не мешает)
       },
     });
 
@@ -229,6 +231,11 @@ export class GameService {
     starsEarned = Math.min(starsEarned, 35);
 
     // ─────────────────────────────────────
+    // 6.5️⃣ MEAT (мясо за клики)
+    // ─────────────────────────────────────
+    const meatEarned = clicks; // ✅ 1 клик = 1 мясо
+
+    // ─────────────────────────────────────
     // 7️⃣ XP + LEVEL
     // ─────────────────────────────────────
     const xpGained = Math.floor(serverScore / 2);
@@ -262,11 +269,15 @@ export class GameService {
           stars: { increment: starsEarned },
           level: newLevel,
           xp: newXp,
+
+          // ✅ начисляем мясо
+          meat: { increment: meatEarned },
         },
         select: {
           stars: true,
           level: true,
           xp: true,
+          meat: true, // ✅ вернем на фронт
           telegramId: true,
         },
       }),
@@ -335,10 +346,13 @@ export class GameService {
       xpGained,
       leveledUp,
 
+      // ✅ MEAT
+      meatEarned,
+      totalMeat: updatedUser.meat,
+
       referralRewardTickets, // 0 или 5
     };
   }
-
 
   private getXpForNextLevel(level: number): number {
     // простая формула: чем выше уровень, тем больше нужно XP
