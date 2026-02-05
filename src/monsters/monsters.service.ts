@@ -17,11 +17,11 @@ export class MonstersService {
   ) {}
 
   // ─────────────────────────────────────────────
-  // XP / LEVEL (1..5)
+  // XP / LEVEL (unlimited)
+  // LVL1→2 = 1000, LVL2→3 = 2000, LVL3→4 = 3000, ...
   // ─────────────────────────────────────────────
-  private xpForNextLevel(level: number): number {
-    const table: Record<number, number> = { 1: 20, 2: 40, 3: 70, 4: 100 };
-    return table[level] ?? Infinity;
+  xpForNextLevel(level: number) {
+    return level * 1000;
   }
 
   private getUserId(authHeader: string): number {
@@ -54,7 +54,7 @@ export class MonstersService {
         count: r.count,
         level: r.level,
         xp: r.xp,
-        xpNext: r.level >= 5 ? null : this.xpForNextLevel(r.level),
+        xpNext: this.xpForNextLevel(r.level), // ✅ unlimited
       })),
     };
   }
@@ -86,29 +86,29 @@ export class MonstersService {
     if (!user) throw new UnauthorizedException('User not found');
 
     return {
-      meat: user.meat, // ✅ фронту удобно показывать баланс мяса
+      meat: user.meat,
       slots: slots.map((s) => ({
         slotIndex: s.slotIndex,
         isUnlocked: s.isUnlocked,
         unlockPrice: s.unlockPrice,
+
+        // оставляю для совместимости с твоим фронтом
         fedCountToday: s.fedCountToday,
         lastFedAt: s.lastFedAt,
+
         monster: s.userMonster
           ? {
-            userMonsterId: s.userMonster.id,
-            monsterId: s.userMonster.monsterId,
-            key: s.userMonster.monster.key,
-            name: s.userMonster.monster.name,
-            rarity: s.userMonster.monster.rarity,
-            imgUrl: s.userMonster.monster.imgUrl,
-            count: s.userMonster.count,
-            level: s.userMonster.level,
-            xp: s.userMonster.xp,
-            xpNext:
-              s.userMonster.level >= 5
-                ? null
-                : this.xpForNextLevel(s.userMonster.level),
-          }
+              userMonsterId: s.userMonster.id,
+              monsterId: s.userMonster.monsterId,
+              key: s.userMonster.monster.key,
+              name: s.userMonster.monster.name,
+              rarity: s.userMonster.monster.rarity,
+              imgUrl: s.userMonster.monster.imgUrl,
+              count: s.userMonster.count,
+              level: s.userMonster.level,
+              xp: s.userMonster.xp,
+              xpNext: this.xpForNextLevel(s.userMonster.level), // ✅ unlimited
+            }
           : null,
       })),
     };
@@ -169,6 +169,9 @@ export class MonstersService {
       throw new BadRequestException('Invalid userMonsterId');
     }
 
+    // ✅ чтобы у новых юзеров не было "Slot not found"
+    await this.ensureFarmSlots(userId, 8);
+
     const slot = await this.prisma.farmSlot.findUnique({
       where: { userId_slotIndex: { userId, slotIndex } },
     });
@@ -179,10 +182,12 @@ export class MonstersService {
       where: { id: userMonsterId },
       include: { monster: true },
     });
-    if (!um || um.userId !== userId)
+    if (!um || um.userId !== userId) {
       throw new BadRequestException('Monster not yours');
-    if (um.count <= 0)
+    }
+    if (um.count <= 0) {
       throw new BadRequestException('You have 0 of this monster');
+    }
 
     await this.prisma.farmSlot.update({
       where: { userId_slotIndex: { userId, slotIndex } },
@@ -192,6 +197,7 @@ export class MonstersService {
     return { ok: true };
   }
 
+  // ✅ unlimited feeding: 1 meat = 1 xp
   async feed(authHeader: string, slotIndex: number) {
     const userId = this.getUserId(authHeader);
 
@@ -206,51 +212,23 @@ export class MonstersService {
 
     if (!slot) throw new BadRequestException('Slot not found');
     if (!slot.isUnlocked) throw new ForbiddenException('Slot locked');
-    if (!slot.userMonsterId || !slot.userMonster) {
-      throw new BadRequestException('No monster in slot');
-    }
+    if (!slot.userMonster) throw new BadRequestException('No monster in slot');
 
-    const now = new Date();
-    const startOfDay = new Date(now);
-    startOfDay.setHours(0, 0, 0, 0);
-
-    const sameDay = slot.lastFedAt ? slot.lastFedAt >= startOfDay : false;
-    const fedCountToday = sameDay ? slot.fedCountToday : 0;
-
-    if (fedCountToday >= 5) {
-      throw new ForbiddenException('Feed limit reached today');
-    }
-
-    // ✅ загружаем актуального монстра
-    const um = await this.prisma.userMonster.findUnique({
-      where: { id: slot.userMonsterId },
-    });
-    if (!um) throw new BadRequestException('UserMonster not found');
-
-    // ✅ готовим апдейт level/xp
-    let level = um.level;
-    let xp = um.xp;
-
-    if (level < 5) {
-      xp += 10;
-
-      while (level < 5 && xp >= this.xpForNextLevel(level)) {
-        xp -= this.xpForNextLevel(level);
-        level += 1;
-      }
-
-      if (level >= 5) xp = 0;
-    }
-
-    // ✅ стоимость кормления
     const MEAT_COST = 1;
 
-    // ✅ всё делаем атомарно:
-    // 1) списали мясо (и проверили что было достаточно)
-    // 2) апдейт монстра (xp/level)
-    // 3) апдейт слота (lastFedAt/fedCountToday)
-    const [updatedUser, updatedUm, updatedSlot] =
-      await this.prisma.$transaction(async (tx) => {
+    const um = slot.userMonster;
+
+    let level = um.level;
+    let xp = um.xp + 1; // ✅ +1 xp за 1 мясо
+
+    while (xp >= this.xpForNextLevel(level)) {
+      xp -= this.xpForNextLevel(level);
+      level += 1;
+    }
+
+    const [meatLeft, updatedMonster] = await this.prisma.$transaction(
+      async (tx) => {
+        // 1) списать мясо (и проверить что хватило)
         const u = await tx.user.updateMany({
           where: { id: userId, meat: { gte: MEAT_COST } },
           data: { meat: { decrement: MEAT_COST } },
@@ -260,41 +238,31 @@ export class MonstersService {
           throw new ForbiddenException('Not enough meat');
         }
 
-        const newUser = await tx.user.findUnique({
+        // 2) вернуть актуальный баланс мяса
+        const user = await tx.user.findUnique({
           where: { id: userId },
           select: { meat: true },
         });
 
-        const newUm = await tx.userMonster.update({
+        // 3) апдейт монстра
+        const monster = await tx.userMonster.update({
           where: { id: um.id },
           data: { level, xp },
           select: { id: true, level: true, xp: true },
         });
 
-        const newSlot = await tx.farmSlot.update({
-          where: { userId_slotIndex: { userId, slotIndex } },
-          data: {
-            fedCountToday: sameDay ? { increment: 1 } : 1,
-            lastFedAt: now,
-          },
-          select: { slotIndex: true, fedCountToday: true, lastFedAt: true },
-        });
-
-        return [newUser!, newUm, newSlot] as const;
-      });
+        return [user!.meat, monster] as const;
+      },
+    );
 
     return {
       ok: true,
-      meatLeft: updatedUser.meat, // ✅ сколько осталось мяса
-      slotIndex: updatedSlot.slotIndex,
-      fedCountToday: updatedSlot.fedCountToday,
-      lastFedAt: updatedSlot.lastFedAt,
+      meatLeft,
       monster: {
-        userMonsterId: updatedUm.id,
-        level: updatedUm.level,
-        xp: updatedUm.xp,
-        xpNext:
-          updatedUm.level >= 5 ? null : this.xpForNextLevel(updatedUm.level),
+        userMonsterId: updatedMonster.id,
+        level: updatedMonster.level,
+        xp: updatedMonster.xp,
+        xpNext: this.xpForNextLevel(updatedMonster.level),
       },
     };
   }
@@ -332,35 +300,28 @@ export class MonstersService {
   }
 
   // ─────────────────────────────────────────────
-  // INTERNAL: ensure slots exist
+  // INTERNAL: ensure slots exist (8)
+  // safer: createMany + skipDuplicates
   // ─────────────────────────────────────────────
   private async ensureFarmSlots(userId: number, total: number) {
-    const existing = await this.prisma.farmSlot.count({ where: { userId } });
-    if (existing >= total) return;
-
     const prices = Array.from({ length: total }, (_, i) => {
       if (i === 0) return 0; // slotIndex 1 free
       return Math.round(50 * Math.pow(1.6, i - 1));
     });
 
-    const ops: Prisma.PrismaPromise<any>[] = Array.from(
-      { length: total - existing },
-      (_, idx) => {
-        const slotIndex = existing + 1 + idx;
+    const data = Array.from({ length: total }, (_, i) => {
+      const slotIndex = i + 1;
+      return {
+        userId,
+        slotIndex,
+        isUnlocked: slotIndex === 1,
+        unlockPrice: prices[i],
+      };
+    });
 
-        return this.prisma.farmSlot.create({
-          data: {
-            userId,
-            slotIndex,
-            isUnlocked: slotIndex === 1,
-            unlockPrice: prices[slotIndex - 1],
-          },
-        });
-      },
-    );
-
-    if (ops.length) {
-      await this.prisma.$transaction(ops);
-    }
+    await this.prisma.farmSlot.createMany({
+      data,
+      skipDuplicates: true, // ✅ параллельные вызовы не ломаются
+    });
   }
 }
