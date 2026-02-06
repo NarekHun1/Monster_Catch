@@ -6,7 +6,6 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { Prisma } from '@prisma/client';
 import { AuthService } from '../auth/auth.service';
 
 @Injectable()
@@ -21,7 +20,7 @@ export class MonstersService {
   // LVL1→2 = 1000, LVL2→3 = 2000, LVL3→4 = 3000, ...
   // ─────────────────────────────────────────────
   xpForNextLevel(level: number) {
-    return level * 1000;
+    return level * 100;
   }
 
   private getUserId(authHeader: string): number {
