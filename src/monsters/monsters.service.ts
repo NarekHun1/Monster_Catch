@@ -112,6 +112,191 @@ export class MonstersService {
       })),
     };
   }
+  private huntEndsInHours(hours: number) {
+    const ms = hours * 60 * 60 * 1000;
+    return new Date(Date.now() + ms);
+  }
+
+  private secondsLeft(endsAt: Date) {
+    return Math.max(0, Math.floor((endsAt.getTime() - Date.now()) / 1000));
+  }
+
+  private rollHuntReward() {
+    // потом настроим веса — сейчас “как ты сказал”
+    const r = Math.random() * 100;
+
+    // 15% ничего
+    if (r < 15) return { stars: 0, tickets: 0, coins: 0, meat: 0 };
+
+    // 25%: 10 stars 1 bilet 1 coin
+    if (r < 40) return { stars: 10, tickets: 1, coins: 1, meat: 0 };
+
+    // 20%: 10 meat 10 stars 1 bilet
+    if (r < 60) return { stars: 10, tickets: 1, coins: 0, meat: 10 };
+
+    // 20%: 5 meat 5 stars 1 coin
+    if (r < 80) return { stars: 5, tickets: 0, coins: 1, meat: 5 };
+
+    // 20%: 10 meat
+    return { stars: 0, tickets: 0, coins: 0, meat: 10 };
+  }
+
+  async getHuntStatus(authHeader: string, userMonsterId: number) {
+    const userId = this.getUserId(authHeader);
+
+    const um = await this.prisma.userMonster.findUnique({
+      where: { id: userMonsterId },
+      include: { hunt: true },
+    });
+    if (!um || um.userId !== userId)
+      throw new BadRequestException('Monster not yours');
+
+    const hunt = um.hunt;
+    if (hunt && hunt.status === 'RUNNING') {
+      const left = this.secondsLeft(hunt.endsAt);
+      return {
+        ok: true,
+        status: left > 0 ? 'RUNNING' : 'READY',
+        endsAt: hunt.endsAt,
+        secondsLeft: left,
+        feedCountForHunt: um.feedCountForHunt,
+        canStart: false,
+        canClaim: left === 0,
+      };
+    }
+
+    const canStart = um.level >= 5 && um.feedCountForHunt >= 100;
+    return {
+      ok: true,
+      status: 'IDLE',
+      endsAt: null,
+      secondsLeft: 0,
+      feedCountForHunt: um.feedCountForHunt,
+      canStart,
+      canClaim: false,
+    };
+  }
+
+  async startHunt(authHeader: string, userMonsterId: number) {
+    const userId = this.getUserId(authHeader);
+
+    const um = await this.prisma.userMonster.findUnique({
+      where: { id: userMonsterId },
+      include: { hunt: true },
+    });
+    if (!um || um.userId !== userId)
+      throw new BadRequestException('Monster not yours');
+
+    if (um.level < 5) throw new ForbiddenException('Monster level must be 5');
+    if (um.feedCountForHunt < 100)
+      throw new ForbiddenException('Need 100 feedings to hunt');
+
+    if (um.hunt && um.hunt.status === 'RUNNING') {
+      const left = this.secondsLeft(um.hunt.endsAt);
+      if (left > 0) throw new BadRequestException('Hunt already running');
+      throw new BadRequestException('Hunt is ready — claim it first');
+    }
+
+    const endsAt = this.huntEndsInHours(24);
+
+    // ✅ upsert: чтобы не было дублей/ошибок
+    const hunt = await this.prisma.monsterHunt.upsert({
+      where: { userMonsterId },
+      create: {
+        userId,
+        userMonsterId,
+        status: 'RUNNING',
+        endsAt,
+      },
+      update: {
+        userId,
+        status: 'RUNNING',
+        startedAt: new Date(),
+        endsAt,
+        rewardStars: 0,
+        rewardTickets: 0,
+        rewardCoins: 0,
+        rewardMeat: 0,
+      },
+    });
+
+    return {
+      ok: true,
+      status: 'RUNNING',
+      endsAt: hunt.endsAt,
+      secondsLeft: this.secondsLeft(hunt.endsAt),
+    };
+  }
+
+  async claimHunt(authHeader: string, userMonsterId: number) {
+    const userId = this.getUserId(authHeader);
+
+    const hunt = await this.prisma.monsterHunt.findUnique({
+      where: { userMonsterId },
+    });
+    if (!hunt || hunt.userId !== userId)
+      throw new BadRequestException('No hunt');
+
+    if (hunt.status !== 'RUNNING')
+      throw new BadRequestException('Already claimed');
+
+    const left = this.secondsLeft(hunt.endsAt);
+    if (left > 0) throw new ForbiddenException('Not ready yet');
+
+    const reward = this.rollHuntReward();
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      // 1) начислить награду
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          stars: { increment: reward.stars },
+          coins: { increment: reward.coins },
+          meat: { increment: reward.meat },
+        },
+        select: { id: true },
+      });
+
+      // tickets — через Ticket таблицу (как у тебя сделано)
+      if (reward.tickets > 0) {
+        await tx.ticket.createMany({
+          data: Array.from({ length: reward.tickets }, () => ({
+            userId,
+            type: 'ROULETTE', // или сделай новый тип HUNT — если хочешь отдельно
+          })),
+        });
+      }
+
+      // 2) зафиксировать reward и закрыть hunt
+      const updatedHunt = await tx.monsterHunt.update({
+        where: { userMonsterId },
+        data: {
+          status: 'CLAIMED',
+          rewardStars: reward.stars,
+          rewardTickets: reward.tickets,
+          rewardCoins: reward.coins,
+          rewardMeat: reward.meat,
+        },
+      });
+
+      // 3) сбросить прогресс 100 кормлений
+      await tx.userMonster.update({
+        where: { id: userMonsterId },
+        data: { feedCountForHunt: 0 },
+      });
+
+      return updatedHunt;
+    });
+
+    return {
+      ok: true,
+      reward,
+      hunt: {
+        status: result.status,
+        endsAt: result.endsAt,
+      },
+    };
+  }
 
   async unlockSlot(authHeader: string, slotIndex: number) {
     const userId = this.getUserId(authHeader);
@@ -213,12 +398,24 @@ export class MonstersService {
     if (!slot.isUnlocked) throw new ForbiddenException('Slot locked');
     if (!slot.userMonster) throw new BadRequestException('No monster in slot');
 
-    const MEAT_COST = 1;
-
     const um = slot.userMonster;
 
+    // ✅ запретить кормить если монстр на охоте
+    const running = await this.prisma.monsterHunt.findUnique({
+      where: { userMonsterId: um.id },
+    });
+    if (
+      running &&
+      running.status === 'RUNNING' &&
+      this.secondsLeft(running.endsAt) > 0
+    ) {
+      throw new ForbiddenException('Monster is on hunt');
+    }
+
+    const MEAT_COST = 1;
+
     let level = um.level;
-    let xp = um.xp + 1; // ✅ +1 xp за 1 мясо
+    let xp = um.xp + 1;
 
     while (xp >= this.xpForNextLevel(level)) {
       xp -= this.xpForNextLevel(level);
@@ -246,9 +443,22 @@ export class MonstersService {
         // 3) апдейт монстра
         const monster = await tx.userMonster.update({
           where: { id: um.id },
-          data: { level, xp },
-          select: { id: true, level: true, xp: true },
+          data: {
+            level,
+            xp,
+            // ✅ считаем только когда уже lvl5
+            ...(level >= 5 ? { feedCountForHunt: { increment: 1 } } : {}),
+          },
+          select: { id: true, level: true, xp: true, feedCountForHunt: true },
         });
+
+        // ✅ clamp до 100 (чтоб не улетал в 9999)
+        if (monster.feedCountForHunt > 100) {
+          await tx.userMonster.update({
+            where: { id: um.id },
+            data: { feedCountForHunt: 100 },
+          });
+        }
 
         return [user!.meat, monster] as const;
       },
@@ -262,6 +472,7 @@ export class MonstersService {
         level: updatedMonster.level,
         xp: updatedMonster.xp,
         xpNext: this.xpForNextLevel(updatedMonster.level),
+        feedCountForHunt: updatedMonster.feedCountForHunt,
       },
     };
   }

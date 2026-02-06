@@ -6,6 +6,7 @@ import {
   Get,
   Headers,
   Post,
+  Query,
 } from '@nestjs/common';
 import { MonstersService } from './monsters.service';
 
@@ -31,7 +32,8 @@ export class MonstersController {
     @Body() body?: { slotIndex?: number },
   ) {
     if (!auth) throw new BadRequestException('Missing Authorization header');
-    if (!body?.slotIndex) throw new BadRequestException('slotIndex is required');
+    if (!body?.slotIndex)
+      throw new BadRequestException('slotIndex is required');
     return this.monstersService.unlockSlot(auth, body.slotIndex);
   }
 
@@ -44,7 +46,11 @@ export class MonstersController {
     if (!body?.slotIndex || !body?.userMonsterId) {
       throw new BadRequestException('slotIndex and userMonsterId are required');
     }
-    return this.monstersService.assignToSlot(auth, body.slotIndex, body.userMonsterId);
+    return this.monstersService.assignToSlot(
+      auth,
+      body.slotIndex,
+      body.userMonsterId,
+    );
   }
 
   @Post('farm/feed')
@@ -53,7 +59,8 @@ export class MonstersController {
     @Body() body?: { slotIndex?: number },
   ) {
     if (!auth) throw new BadRequestException('Missing Authorization header');
-    if (!body?.slotIndex) throw new BadRequestException('slotIndex is required');
+    if (!body?.slotIndex)
+      throw new BadRequestException('slotIndex is required');
     return this.monstersService.feed(auth, body.slotIndex);
   }
 
@@ -66,5 +73,35 @@ export class MonstersController {
     if (!auth) throw new BadRequestException('Missing Authorization header');
     if (!body?.key) throw new BadRequestException('key is required');
     return this.monstersService.devGiveMonster(auth, body.key, body.count ?? 1);
+  }
+  @Get('hunt/status')
+  huntStatus(
+    @Headers('authorization') auth: string,
+    @Query('userMonsterId') userMonsterId: string,
+  ) {
+    if (!auth) throw new BadRequestException('Missing Authorization header');
+    return this.monstersService.getHuntStatus(auth, Number(userMonsterId));
+  }
+
+  @Post('hunt/start')
+  huntStart(
+    @Headers('authorization') auth: string,
+    @Body() body: { userMonsterId: number },
+  ) {
+    if (!auth) throw new BadRequestException('Missing Authorization header');
+    if (!body?.userMonsterId)
+      throw new BadRequestException('userMonsterId is required');
+    return this.monstersService.startHunt(auth, body.userMonsterId);
+  }
+
+  @Post('hunt/claim')
+  huntClaim(
+    @Headers('authorization') auth: string,
+    @Body() body: { userMonsterId: number },
+  ) {
+    if (!auth) throw new BadRequestException('Missing Authorization header');
+    if (!body?.userMonsterId)
+      throw new BadRequestException('userMonsterId is required');
+    return this.monstersService.claimHunt(auth, body.userMonsterId);
   }
 }
