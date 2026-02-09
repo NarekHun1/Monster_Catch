@@ -90,6 +90,7 @@ model TournamentParticipant {
   createdAt    DateTime   @default(now())
   tournament   Tournament @relation(fields: [tournamentId], references: [id])
   user         User       @relation(fields: [userId], references: [id])
+  payWith      String     @default("coins") // "coins" | "tickets"
 
   @@unique([userId, tournamentId])
 }
@@ -301,6 +302,11 @@ enum TournamentStatus {
   PLANNED
   ACTIVE
   FINISHED
+}
+
+enum PayWith {
+  coins
+  tickets
 }
 
 enum TournamentType {

@@ -111,6 +111,16 @@ export class TournamentService {
       Math.floor(prizePool * 0.1),
     ];
   }
+  // ───────────────── STANDARD (HOURLY / DAILY) PRIZES ─────────────────
+  private calculateStandardPrizes(prizePool: number, count: number): number[] {
+    if (count < 2) return [];
+
+    return [
+      Math.floor(prizePool * 0.4), // 🥇 40%
+      Math.floor(prizePool * 0.2), // 🥈 20%
+      Math.floor(prizePool * 0.1), // 🥉 10%
+    ];
+  }
 
   // ───────────────── CREATE / GET ─────────────────
   async getOrCreateTournament(type: TournamentType) {
@@ -259,7 +269,7 @@ export class TournamentService {
             });
 
             await tx.tournamentParticipant.create({
-              data: { userId, tournamentId: tournament.id },
+              data: { userId, tournamentId: tournament.id, payWith: method },
             });
 
             this.logger.log(
@@ -301,7 +311,7 @@ export class TournamentService {
           });
 
           await tx.tournamentParticipant.create({
-            data: { userId, tournamentId: tournament.id },
+            data: { userId, tournamentId: tournament.id, payWith: method },
           });
 
           this.logger.log(
@@ -357,7 +367,7 @@ export class TournamentService {
           });
 
           await tx.tournamentParticipant.create({
-            data: { userId, tournamentId: tournament.id },
+            data: { userId, tournamentId: tournament.id, payWith: method },
           });
 
           this.logger.log(
@@ -391,7 +401,7 @@ export class TournamentService {
         });
 
         await tx.tournamentParticipant.create({
-          data: { userId, tournamentId: tournament.id },
+          data: { userId, tournamentId: tournament.id, payWith: method },
         });
 
         this.logger.log(
@@ -455,23 +465,55 @@ export class TournamentService {
       where: { status: 'ACTIVE', endsAt: { lte: new Date() } },
       include: {
         participants: {
-          include: {
-            user: { select: { telegramId: true } },
-          },
+          include: { user: true },
         },
       },
     });
 
     for (const t of tournaments) {
       const sorted = [...t.participants].sort((a, b) => b.score - a.score);
+      // ───────────── 1 PLAYER → REFUND (same payWith) ─────────────
+      if (sorted.length === 1) {
+        const p = sorted[0];
+        const payWith = (p as any).payWith as 'coins' | 'tickets' | undefined;
 
+        const fee = t.entryFee;
+
+        if (payWith === 'tickets') {
+          await this.prisma.ticket.createMany({
+            data: Array.from({ length: fee }, () => ({
+              userId: p.userId,
+              type: 'TOURNAMENT', // ✅ у тебя есть в enum TicketType
+            })),
+          });
+        } else {
+          await this.prisma.user.update({
+            where: { id: p.userId },
+            data: { coins: { increment: fee } },
+          });
+        }
+
+        await this.prisma.tournament.update({
+          where: { id: t.id },
+          data: { status: 'FINISHED' },
+        });
+
+        if (p.user?.telegramId) {
+          await this.safeSendTelegramMessage(
+            String(p.user.telegramId),
+            `ℹ️ В турнире ${this.formatTournamentTitle(t.type as any)} не было соперников.\nВзнос возвращён (${payWith === 'tickets' ? `🎟 ${fee} tickets` : `🪙 ${fee} coins`}).`,
+          );
+        }
+
+        continue;
+      }
       // призы как у тебя
       let prizes: number[] = [];
+
       if (t.type === 'CASH_CUP') {
         prizes = this.calculateCashCupPrizes(t.prizePool, sorted.length);
       } else {
-        if (sorted.length === 1) prizes = [t.entryFee];
-        else if (sorted.length >= 2) prizes = [50];
+        prizes = this.calculateStandardPrizes(t.prizePool, sorted.length);
       }
 
       // начислить + закрыть
