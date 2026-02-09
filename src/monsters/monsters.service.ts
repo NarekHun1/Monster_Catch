@@ -20,7 +20,7 @@ export class MonstersService {
   // LVL1→2 = 1000, LVL2→3 = 2000, LVL3→4 = 3000, ...
   // ─────────────────────────────────────────────
   xpForNextLevel(level: number) {
-    return level * 100;
+    return level * 30;
   }
 
   private getUserId(authHeader: string): number {
