@@ -2,12 +2,12 @@ import {
   BadRequestException,
   Injectable,
   UnauthorizedException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import * as jwt from 'jsonwebtoken';
 import { NotificationService } from '../notification/notification.service';
-import { ForbiddenException } from '@nestjs/common';
 import { TicketType } from '@prisma/client';
 
 interface JwtPayload {
@@ -27,28 +27,21 @@ export class GameService {
       where: { id: userId },
       data: { isBlocked: true },
     });
-
     console.log('🚨 USER BLOCKED:', { userId, reason });
   }
 
   /** Достаём userId из JWT-токена */
   private getUserIdFromToken(token: string): number {
-    if (!token) {
-      throw new UnauthorizedException('Token is missing');
-    }
+    if (!token) throw new UnauthorizedException('Token is missing');
 
     const secret = this.config.get<string>('JWT_SECRET');
-    if (!secret) {
-      throw new UnauthorizedException('JWT_SECRET is not configured');
-    }
+    if (!secret) throw new UnauthorizedException('JWT_SECRET is not configured');
 
     try {
       const payload = jwt.verify(token, secret) as JwtPayload;
-      if (!payload.userId) {
-        throw new UnauthorizedException('Token payload has no userId');
-      }
+      if (!payload.userId) throw new UnauthorizedException('Token payload has no userId');
       return payload.userId;
-    } catch (e) {
+    } catch {
       throw new UnauthorizedException('Invalid or expired token');
     }
   }
@@ -61,13 +54,10 @@ export class GameService {
         score: { gt: 0 },
         finishedAt: { not: null },
       },
-      orderBy: {
-        _max: { score: 'desc' },
-      },
+      orderBy: { _max: { score: 'desc' } },
       take: 20,
     });
 
-    // Теперь нужно подтянуть данные юзеров
     const result = await Promise.all(
       bestScores.map(async (entry) => {
         const user = await this.prisma.user.findUnique({
@@ -86,17 +76,14 @@ export class GameService {
     return result;
   }
 
-  /** Начать игру: создаём Game в БД и возвращаем gameId + длительность раунда */
+  /** Начать игру */
   async startGame(token: string) {
     const userId = this.getUserIdFromToken(token);
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
     });
-
-    if (!user) {
-      throw new UnauthorizedException('User not found');
-    }
+    if (!user) throw new UnauthorizedException('User not found');
 
     const baseDurationMs = 60_000; // 60 секунд
     const extraPerLevelMs = 5_000; // +5 секунд за уровень extra_time
@@ -104,36 +91,27 @@ export class GameService {
     const roundDurationMs = baseDurationMs + extraTimeMs;
 
     const game = await this.prisma.game.create({
-      data: {
-        userId,
-      },
+      data: { userId },
     });
 
-    console.log(
-      '[GameService.startGame] user.extraTimeLevel =',
-      user.extraTimeLevel,
-    );
-    console.log('[GameService.startGame] roundDurationMs =', roundDurationMs);
-
-    return {
-      gameId: game.id,
-      roundDurationMs,
-    };
+    return { gameId: game.id, roundDurationMs };
   }
 
-  /** Завершить игру: сохранить score, clicks, epicCount, finishedAt + начислить звёзды, XP, мясо и реф.награду */
+  /**
+   * Завершить игру
+   * melasCount — сколько раз был пойман MELAS (даёт мясо)
+   */
   async finishGame(
     token: string,
     gameId: number,
     score: number,
     clicks: number,
     epicCount: number,
+    melasCount: number,
   ) {
     const userId = this.getUserIdFromToken(token);
 
-    // ─────────────────────────────────────
     // 0️⃣ USER + BLOCK CHECK
-    // ─────────────────────────────────────
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -144,31 +122,30 @@ export class GameService {
         xp: true,
         stars: true,
         telegramId: true,
-        meat: true, // ✅ добавили (можно не обязательно, но не мешает)
+        meat: true,
       },
     });
 
     if (!user) throw new UnauthorizedException('User not found');
     if (user.isBlocked) throw new ForbiddenException('User is blocked');
 
-    // ─────────────────────────────────────
     // 1️⃣ BASIC VALIDATION
-    // ─────────────────────────────────────
     if (!gameId || Number.isNaN(gameId)) {
       throw new BadRequestException('Invalid gameId');
     }
 
-    if (![score, clicks, epicCount].every(Number.isFinite)) {
+    // safety cast (если прилетело undefined/null)
+    const melasCountSafe = Number.isFinite(melasCount) ? melasCount : 0;
+
+    if (![score, clicks, epicCount, melasCountSafe].every(Number.isFinite)) {
       throw new BadRequestException('Invalid payload');
     }
 
-    if (score < 0 || clicks < 0 || epicCount < 0) {
+    if (score < 0 || clicks < 0 || epicCount < 0 || melasCountSafe < 0) {
       throw new BadRequestException('Negative values are not allowed');
     }
 
-    // ─────────────────────────────────────
     // 2️⃣ LOAD GAME + OWNERSHIP
-    // ─────────────────────────────────────
     const game = await this.prisma.game.findUnique({
       where: { id: gameId },
     });
@@ -181,9 +158,7 @@ export class GameService {
       throw new BadRequestException('Game already finished');
     }
 
-    // ─────────────────────────────────────
     // 3️⃣ TIME VALIDATION
-    // ─────────────────────────────────────
     const BASE_DURATION_MS = 60_000;
     const EXTRA_TIME_PER_LEVEL_MS = 5_000;
     const ROUND_DURATION_MS =
@@ -200,10 +175,13 @@ export class GameService {
       throw new BadRequestException('Round time exceeded');
     }
 
-    // ─────────────────────────────────────
     // 4️⃣ ANTI-CHEAT
-    // ─────────────────────────────────────
-    if (clicks > 500 || epicCount > 80 || epicCount > clicks) {
+    if (
+      clicks > 500 ||
+      epicCount > 80 ||
+      epicCount > clicks ||
+      melasCountSafe > clicks
+    ) {
       await this.blockUser(userId, 'invalid game metrics');
       throw new ForbiddenException('Cheat detected');
     }
@@ -213,14 +191,10 @@ export class GameService {
       throw new ForbiddenException('Cheat detected');
     }
 
-    // ─────────────────────────────────────
     // 5️⃣ SERVER SCORE
-    // ─────────────────────────────────────
     const serverScore = clicks + epicCount * 10;
 
-    // ─────────────────────────────────────
     // 6️⃣ STARS
-    // ─────────────────────────────────────
     let starsEarned = Math.floor(serverScore / 12);
     starsEarned = Math.max(starsEarned, 3);
     starsEarned = Math.min(starsEarned, 25);
@@ -230,14 +204,10 @@ export class GameService {
 
     starsEarned = Math.min(starsEarned, 35);
 
-    // ─────────────────────────────────────
-    // 6.5️⃣ MEAT (мясо за клики)
-    // ─────────────────────────────────────
-    const meatEarned = clicks; // ✅ 1 клик = 1 мясо
+    // ✅ 6.5️⃣ MEAT — ТОЛЬКО ЗА MELAS (shot убран)
+    const meatEarned = melasCountSafe;
 
-    // ─────────────────────────────────────
     // 7️⃣ XP + LEVEL
-    // ─────────────────────────────────────
     const xpGained = Math.floor(serverScore / 2);
 
     let newLevel = user.level;
@@ -250,9 +220,7 @@ export class GameService {
       leveledUp = true;
     }
 
-    // ─────────────────────────────────────
     // 8️⃣ TRANSACTION: GAME + USER
-    // ─────────────────────────────────────
     const [updatedGame, updatedUser] = await this.prisma.$transaction([
       this.prisma.game.update({
         where: { id: gameId },
@@ -260,6 +228,11 @@ export class GameService {
           score,
           clicks,
           epicCount,
+
+          // ✅ Если ты добавил поле melasCount в Prisma Game — оставь.
+          // ❌ Если НЕ добавил — УДАЛИ следующую строку.
+          melasCount: melasCountSafe as any,
+
           finishedAt: new Date(),
         },
       }),
@@ -269,34 +242,24 @@ export class GameService {
           stars: { increment: starsEarned },
           level: newLevel,
           xp: newXp,
-
-          // ✅ начисляем мясо
           meat: { increment: meatEarned },
         },
         select: {
           stars: true,
           level: true,
           xp: true,
-          meat: true, // ✅ вернем на фронт
+          meat: true,
           telegramId: true,
         },
       }),
     ]);
 
-    // ─────────────────────────────────────
-    // 9️⃣ REFERRAL — FIRST GAME ONLY (FIXED)
-    // 🎟 5 БИЛЕТОВ ПРИГЛАСИВШЕМУ
-    // ─────────────────────────────────────
+    // 9️⃣ REFERRAL — FIRST GAME ONLY
     let referralRewardTickets = 0;
 
     const referral = await this.prisma.referral.findFirst({
-      where: {
-        invitedId: userId,
-        rewarded: false,
-      },
-      include: {
-        inviter: true,
-      },
+      where: { invitedId: userId, rewarded: false },
+      include: { inviter: true },
     });
 
     if (referral?.inviter) {
@@ -318,7 +281,6 @@ export class GameService {
         }),
       ]);
 
-      // 🔔 TELEGRAM (НЕ ЛОМАЕМ FLOW)
       try {
         if (referral.inviter.telegramId) {
           await this.notificationService.sendReferralReward(
@@ -331,9 +293,6 @@ export class GameService {
       }
     }
 
-    // ─────────────────────────────────────
-    // ✅ RESULT
-    // ─────────────────────────────────────
     return {
       ok: true,
       game: updatedGame,
@@ -346,19 +305,22 @@ export class GameService {
       xpGained,
       leveledUp,
 
-      // ✅ MEAT
+      melasCount: melasCountSafe,
+
       meatEarned,
       totalMeat: updatedUser.meat,
 
-      referralRewardTickets, // 0 или 5
+      referralRewardTickets,
     };
   }
 
   private getXpForNextLevel(level: number): number {
-    // простая формула: чем выше уровень, тем больше нужно XP
     return 100 + (level - 1) * 500;
   }
 
+  // ─────────────────────────────────────────
+  // DAILY QUESTS (как у тебя было)
+  // ─────────────────────────────────────────
   async getDailyQuests(token: string) {
     const userId = this.getUserIdFromToken(token);
 
@@ -371,22 +333,15 @@ export class GameService {
       this.prisma.game.findMany({
         where: {
           userId,
-          finishedAt: {
-            gte: startOfDay,
-          },
+          finishedAt: { gte: startOfDay },
         },
       }),
     ]);
 
-    if (!user) {
-      throw new UnauthorizedException('User not found');
-    }
+    if (!user) throw new UnauthorizedException('User not found');
 
     const totalClicks = gamesToday.reduce((sum, g) => sum + (g.clicks ?? 0), 0);
-    const totalEpics = gamesToday.reduce(
-      (sum, g) => sum + (g.epicCount ?? 0),
-      0,
-    );
+    const totalEpics = gamesToday.reduce((sum, g) => sum + (g.epicCount ?? 0), 0);
     const gamesCount = gamesToday.length;
 
     const quests = [
@@ -399,8 +354,7 @@ export class GameService {
         rewardLabel: '+100 ⭐',
         completed: totalClicks >= 1000,
         claimedToday:
-          !!user.dailyCatch1000ClaimAt &&
-          user.dailyCatch1000ClaimAt >= startOfDay,
+          !!user.dailyCatch1000ClaimAt && user.dailyCatch1000ClaimAt >= startOfDay,
       },
       {
         id: 'epic_100',
@@ -424,10 +378,7 @@ export class GameService {
         claimedToday:
           !!user.dailyPlay3ClaimAt && user.dailyPlay3ClaimAt >= startOfDay,
       },
-    ].map((q) => ({
-      ...q,
-      claimable: q.completed && !q.claimedToday,
-    }));
+    ].map((q) => ({ ...q, claimable: q.completed && !q.claimedToday }));
 
     return {
       date: startOfDay.toISOString().slice(0, 10),
@@ -456,24 +407,14 @@ export class GameService {
     const [user, gamesToday] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: userId } }),
       this.prisma.game.findMany({
-        where: {
-          userId,
-          finishedAt: {
-            gte: startOfDay,
-          },
-        },
+        where: { userId, finishedAt: { gte: startOfDay } },
       }),
     ]);
 
-    if (!user) {
-      throw new UnauthorizedException('User not found');
-    }
+    if (!user) throw new UnauthorizedException('User not found');
 
     const totalClicks = gamesToday.reduce((sum, g) => sum + (g.clicks ?? 0), 0);
-    const totalEpics = gamesToday.reduce(
-      (sum, g) => sum + (g.epicCount ?? 0),
-      0,
-    );
+    const totalEpics = gamesToday.reduce((sum, g) => sum + (g.epicCount ?? 0), 0);
     const gamesCount = gamesToday.length;
 
     let completed = false;
@@ -484,8 +425,7 @@ export class GameService {
     if (questId === 'catch_1000') {
       completed = totalClicks >= 1000;
       alreadyClaimed =
-        !!user.dailyCatch1000ClaimAt &&
-        user.dailyCatch1000ClaimAt >= startOfDay;
+        !!user.dailyCatch1000ClaimAt && user.dailyCatch1000ClaimAt >= startOfDay;
       reward = 100;
       userData.dailyCatch1000ClaimAt = now;
     } else if (questId === 'epic_100') {
@@ -504,13 +444,8 @@ export class GameService {
       throw new BadRequestException('Unknown quest');
     }
 
-    if (!completed) {
-      throw new BadRequestException('Quest not completed yet');
-    }
-
-    if (alreadyClaimed) {
-      throw new BadRequestException('Reward already claimed today');
-    }
+    if (!completed) throw new BadRequestException('Quest not completed yet');
+    if (alreadyClaimed) throw new BadRequestException('Reward already claimed today');
 
     userData.stars = { increment: reward };
 
@@ -519,10 +454,6 @@ export class GameService {
       data: userData,
     });
 
-    return {
-      questId,
-      reward,
-      stars: updatedUser.stars,
-    };
+    return { questId, reward, stars: updatedUser.stars };
   }
 }

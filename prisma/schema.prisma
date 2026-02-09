@@ -54,6 +54,7 @@ model Game {
   clicks     Int?      @default(0)
   epicCount  Int?      @default(0)
   user       User      @relation(fields: [userId], references: [id])
+  melasCount Int?      @default(0)
 }
 
 model Referral {

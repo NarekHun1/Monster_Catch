@@ -16,4 +16,8 @@ export class FinishGameDto {
   @IsInt()
   @Min(0)
   epicCount: number;
+
+  @IsInt()
+  @Min(0)
+  melasCount: number;
 }

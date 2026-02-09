@@ -51,6 +51,7 @@ export class GameController {
       body.score,
       body.clicks,
       body.epicCount,
+      Number(body?.melasCount ?? 0),
     );
   }
 
