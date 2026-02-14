@@ -8,41 +8,47 @@ datasource db {
 }
 
 model User {
-  telegramId            String                  @unique
+  telegramId            String    @unique
   username              String?
   firstName             String?
-  lastSeenAt            DateTime                @default(now())
-  id                    Int                     @id @default(autoincrement())
-  createdAt             DateTime                @default(now())
-  epicBoostLevel        Int                     @default(0)
-  extraTimeLevel        Int                     @default(0)
-  multiplierLevel       Int                     @default(0)
-  stars                 Int                     @default(0)
+  lastSeenAt            DateTime  @default(now())
+  id                    Int       @id @default(autoincrement())
+  createdAt             DateTime  @default(now())
+  epicBoostLevel        Int       @default(0)
+  extraTimeLevel        Int       @default(0)
+  multiplierLevel       Int       @default(0)
+  stars                 Int       @default(0)
   dailyCatch1000ClaimAt DateTime?
   dailyEpic100ClaimAt   DateTime?
   dailyPlay3ClaimAt     DateTime?
-  level                 Int                     @default(1)
-  xp                    Int                     @default(0)
-  coins                 Int                     @default(0)
+  level                 Int       @default(1)
+  xp                    Int       @default(0)
+  coins                 Int       @default(0)
   tonAddress            String?
   usdtAddress           String?
   usdtNetwork           String?
-  games                 Game[]
-  payments              Payment[]
-  referralsReceived     Referral[]              @relation("UserInvited")
-  referralsSent         Referral[]              @relation("UserInviter")
-  tournaments           TournamentParticipant[]
-  withdrawals           Withdrawal[]
-  Ticket                Ticket[]
-  StarExchange          StarExchange[]
-  isBlocked             Boolean                 @default(false)
-  rouletteFreeDay       String?
-  rouletteLastSpinAt    DateTime?
-  UserQuest             UserQuest[]
-  UserMonster           UserMonster[]
-  FarmSlot              FarmSlot[]
-  meat                  Int                     @default(0)
-  MonsterHunt           MonsterHunt[]
+
+  games              Game[]
+  payments           Payment[]
+  referralsReceived  Referral[]              @relation("UserInvited")
+  referralsSent      Referral[]              @relation("UserInviter")
+  tournaments        TournamentParticipant[]
+  withdrawals        Withdrawal[]
+  Ticket             Ticket[]
+  StarExchange       StarExchange[]
+  isBlocked          Boolean                 @default(false)
+  rouletteFreeDay    String?
+  rouletteLastSpinAt DateTime?
+  UserQuest          UserQuest[]
+  UserMonster        UserMonster[]
+  FarmSlot           FarmSlot[]
+  meat               Int                     @default(0)
+  MonsterHunt        MonsterHunt[]
+
+  // ✅ Market
+  marketUnlocked  Boolean         @default(false)
+  marketSales     MarketListing[] @relation("MarketSeller")
+  marketPurchases MarketListing[] @relation("MarketBuyer")
 }
 
 model Game {
@@ -53,8 +59,9 @@ model Game {
   finishedAt DateTime?
   clicks     Int?      @default(0)
   epicCount  Int?      @default(0)
-  user       User      @relation(fields: [userId], references: [id])
   melasCount Int?      @default(0)
+
+  user User @relation(fields: [userId], references: [id])
 }
 
 model Referral {
@@ -83,14 +90,15 @@ model Tournament {
 }
 
 model TournamentParticipant {
-  id           Int        @id @default(autoincrement())
+  id           Int      @id @default(autoincrement())
   userId       Int
   tournamentId Int
-  score        Int        @default(0)
-  createdAt    DateTime   @default(now())
-  tournament   Tournament @relation(fields: [tournamentId], references: [id])
-  user         User       @relation(fields: [userId], references: [id])
-  payWith      String     @default("coins") // "coins" | "tickets"
+  score        Int      @default(0)
+  createdAt    DateTime @default(now())
+  payWith      String   @default("coins") // "coins" | "tickets"
+
+  tournament Tournament @relation(fields: [tournamentId], references: [id])
+  user       User       @relation(fields: [userId], references: [id])
 
   @@unique([userId, tournamentId])
 }
@@ -104,7 +112,8 @@ model Payment {
   payload                 String?
   userId                  Int
   createdAt               DateTime @default(now())
-  user                    User     @relation(fields: [userId], references: [id])
+
+  user User @relation(fields: [userId], references: [id])
 }
 
 model Withdrawal {
@@ -120,7 +129,8 @@ model Withdrawal {
   txHash      String?
   createdAt   DateTime         @default(now())
   processedAt DateTime?
-  user        User             @relation(fields: [userId], references: [id])
+
+  user User @relation(fields: [userId], references: [id])
 }
 
 model Quest {
@@ -130,10 +140,9 @@ model Quest {
   type          QuestType @default(SUBSCRIBE)
   rewardTickets Int       @default(1)
 
-  // для подписки:
-  chatId       String? // например "-1001234567890" или "@mychannel"
-  chatUsername String? // "@mychannel" (удобно для ссылки)
-  inviteLink   String? // если приватный канал/чат
+  chatId       String?
+  chatUsername String?
+  inviteLink   String?
   openUrl      String?
 
   isActive  Boolean  @default(true)
@@ -151,22 +160,12 @@ model UserQuest {
   claimedAt   DateTime?
   createdAt   DateTime        @default(now())
   openedAt    DateTime?
-  user        User            @relation(fields: [userId], references: [id])
-  quest       Quest           @relation(fields: [questId], references: [id])
+
+  user  User  @relation(fields: [userId], references: [id])
+  quest Quest @relation(fields: [questId], references: [id])
 
   @@unique([userId, questId])
   @@index([userId, status])
-}
-
-enum QuestType {
-  SUBSCRIBE
-  INSTAGRAM_FOLLOW
-}
-
-enum UserQuestStatus {
-  PENDING
-  COMPLETED // проверка прошла
-  CLAIMED // билет выдан
 }
 
 model StarExchange {
@@ -202,7 +201,8 @@ model MonsterDef {
   isActive  Boolean       @default(true)
   createdAt DateTime      @default(now())
 
-  users UserMonster[]
+  users          UserMonster[]
+  marketListings MarketListing[]
 }
 
 model UserMonster {
@@ -211,19 +211,21 @@ model UserMonster {
   monsterId Int
   count     Int @default(0)
 
-  // прогресс конкретного монстра
   level Int @default(1) // 1..5
   xp    Int @default(0)
 
   updatedAt DateTime @updatedAt
   createdAt DateTime @default(now())
 
-  feedCountForHunt Int          @default(0) // 0..100 (после 100 можно стартовать)
-  hunt             MonsterHunt? // 1 активная/последняя охота
+  feedCountForHunt Int          @default(0) // 0..100
+  hunt             MonsterHunt?
 
   user    User       @relation(fields: [userId], references: [id])
   monster MonsterDef @relation(fields: [monsterId], references: [id])
   slots   FarmSlot[]
+
+  // ✅ один активный лот максимум (и вообще связь "лот для этого монстра")
+  marketListing MarketListing?
 
   @@unique([userId, monsterId])
   @@index([userId])
@@ -232,10 +234,10 @@ model UserMonster {
 model FarmSlot {
   id            Int       @id @default(autoincrement())
   userId        Int
-  slotIndex     Int // 1..N (позиция слота на UI)
+  slotIndex     Int
   isUnlocked    Boolean   @default(false)
-  unlockPrice   Int       @default(0) // сколько coins нужно, чтобы открыть
-  userMonsterId Int? // какой монстр стоит в слоте сейчас
+  unlockPrice   Int       @default(0)
+  userMonsterId Int?
   fedCountToday Int       @default(0)
   lastFedAt     DateTime?
   createdAt     DateTime  @default(now())
@@ -257,7 +259,6 @@ model MonsterHunt {
   startedAt DateTime   @default(now())
   endsAt    DateTime
 
-  // ✅ reward фиксируем при claim
   rewardStars   Int @default(0)
   rewardTickets Int @default(0)
   rewardCoins   Int @default(0)
@@ -270,6 +271,44 @@ model MonsterHunt {
   userMonster UserMonster @relation(fields: [userMonsterId], references: [id])
 
   @@index([userId])
+}
+
+model MarketListing {
+  id Int @id @default(autoincrement())
+
+  sellerId Int
+  buyerId  Int?
+
+  userMonsterId Int
+  monsterId     Int
+
+  price    Int
+  currency MarketCurrency
+  status   MarketStatus   @default(ACTIVE)
+
+  fromSlotIndex Int?
+  createdAt     DateTime  @default(now())
+  soldAt        DateTime?
+
+  seller      User        @relation("MarketSeller", fields: [sellerId], references: [id])
+  buyer       User?       @relation("MarketBuyer", fields: [buyerId], references: [id])
+  userMonster UserMonster @relation(fields: [userMonsterId], references: [id])
+  monster     MonsterDef  @relation(fields: [monsterId], references: [id])
+
+  @@unique([userMonsterId]) // 1 лот на 1 UserMonster
+  @@index([status, createdAt])
+  @@index([sellerId, status])
+}
+
+enum QuestType {
+  SUBSCRIBE
+  INSTAGRAM_FOLLOW
+}
+
+enum UserQuestStatus {
+  PENDING
+  COMPLETED
+  CLAIMED
 }
 
 enum HuntStatus {
@@ -313,4 +352,15 @@ enum TournamentType {
   HOURLY
   DAILY
   CASH_CUP
+}
+
+enum MarketStatus {
+  ACTIVE
+  SOLD
+  CANCELED
+}
+
+enum MarketCurrency {
+  COINS
+  STARS
 }

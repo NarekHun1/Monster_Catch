@@ -17,6 +17,7 @@ import { TicketsModule } from './tickets/tickets.module';
 import { RouletteModule } from './roulette/roulette.module';
 import { QuestsModule } from './quests/quests.module';
 import { MonstersModule } from './monsters/monsters.module';
+import { MarketModule } from './market/market.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { MonstersModule } from './monsters/monsters.module';
     RouletteModule,
     QuestsModule,
     MonstersModule,
+    MarketModule,
   ],
 })
 export class AppModule {}
