@@ -66,6 +66,7 @@ export class UserController {
       epicBoostLevel: user.epicBoostLevel,
       level: user.level,
       xp: user.xp,
+      marketUnlocked: user.marketUnlocked,
     };
   }
 
