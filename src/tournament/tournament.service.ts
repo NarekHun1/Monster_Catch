@@ -33,7 +33,7 @@ export class TournamentService {
   // CASH_CUP fee (как в join)
   private readonly CASHCUP_REQUIRED = 10;
 
-  // jump окно
+  // ✅ one-jump окно
   private readonly BOT_JUMP_WINDOW_FROM = 0.3;
   private readonly BOT_JUMP_WINDOW_TO = 0.8;
 
@@ -59,6 +59,7 @@ export class TournamentService {
   private dbDownUntil = 0;
   private lastDbErrLogAt = 0;
 
+  // anti-overlap
   private cashCupTickRunning = false;
   private finishTickRunning = false;
 
@@ -69,10 +70,10 @@ export class TournamentService {
   private isPrismaDbError(e: any): boolean {
     const msg = String(e?.message || e);
     return (
-      e?.code === 'P1000' || // auth failed
-      e?.code === 'P1001' || // can't reach
-      e?.code === 'P1002' || // timeout
-      e?.code === 'P1017' || // server closed connection ✅
+      e?.code === 'P1000' ||
+      e?.code === 'P1001' ||
+      e?.code === 'P1002' ||
+      e?.code === 'P1017' || // ✅ Server has closed the connection
       msg.includes("Can't reach database server") ||
       msg.includes('Server has closed the connection') ||
       msg.includes('Connection terminated') ||
@@ -85,6 +86,7 @@ export class TournamentService {
     const now = Date.now();
     const prevLeft = Math.max(0, this.dbDownUntil - now);
 
+    // exponential backoff: 10s → 20s → 40s → 60s (max)
     const next = Math.min(
       60_000,
       Math.max(10_000, prevLeft ? prevLeft * 2 : 10_000),
@@ -92,6 +94,7 @@ export class TournamentService {
 
     this.dbDownUntil = now + next;
 
+    // лог не чаще 1 раза в 15 секунд
     if (now - this.lastDbErrLogAt > 15_000) {
       this.lastDbErrLogAt = now;
       const msg = e instanceof Error ? e.message : String(e);
@@ -222,8 +225,7 @@ export class TournamentService {
   private pickBotName() {
     const idx = Math.floor(Math.random() * this.BOT_NAMES.length);
     const base = this.BOT_NAMES[idx];
-    const suffix =
-      Math.random() < 0.22 ? `_${Math.floor(Math.random() * 999)}` : '';
+    const suffix = Math.random() < 0.22 ? `_${Math.floor(Math.random() * 999)}` : '';
     return `${base}${suffix}`;
   }
 
@@ -232,6 +234,7 @@ export class TournamentService {
     return `bot:${Date.now()}:${rnd}`;
   }
 
+  // ✅ детерминированное 0..1
   private hash01(seed: string): number {
     let h = 2166136261;
     for (let i = 0; i < seed.length; i++) {
@@ -241,6 +244,9 @@ export class TournamentService {
     return ((h >>> 0) % 1_000_000) / 1_000_000;
   }
 
+  /**
+   * ✅ Гарантирует пул ботов в базе (user.isBot=true).
+   */
   private async ensureBotPool() {
     await this.dbGuard(async () => {
       const botCount = await this.prisma.user.count({ where: { isBot: true } });
@@ -249,17 +255,15 @@ export class TournamentService {
       const need = this.BOT_POOL_MIN - botCount;
       this.logger.warn(`[BOTS] Bot pool low: have=${botCount}, creating=${need}`);
 
-      const data: Prisma.UserCreateManyInput[] = Array.from({ length: need }).map(
-        () => {
-          const name = this.pickBotName();
-          return {
-            telegramId: this.genBotTelegramId(),
-            username: name,
-            firstName: name,
-            isBot: true,
-          } as any;
-        },
-      );
+      const data: Prisma.UserCreateManyInput[] = Array.from({ length: need }).map(() => {
+        const name = this.pickBotName();
+        return {
+          telegramId: this.genBotTelegramId(),
+          username: name,
+          firstName: name,
+          isBot: true,
+        } as any;
+      });
 
       try {
         await this.prisma.user.createMany({ data, skipDuplicates: true });
@@ -269,6 +273,9 @@ export class TournamentService {
     });
   }
 
+  /**
+   * ✅ Переименовывает ботов внутри конкретного турнира (чтобы не палились повтором имён).
+   */
   private async rotateBotNamesForTournament(tournamentId: number) {
     await this.dbGuard(async () => {
       const bots = await this.prisma.tournamentParticipant.findMany({
@@ -302,6 +309,10 @@ export class TournamentService {
     });
   }
 
+  /**
+   * ✅ Добавляет РОВНО 3 бота ТОЛЬКО если уже есть хотя бы 1 человек.
+   * ✅ prizePool увеличивается (боты “вносят” как люди).
+   */
   private async ensureCashCupBotsIfHumans(tournamentId: number) {
     await this.ensureBotPool();
 
@@ -420,9 +431,7 @@ export class TournamentService {
     const userId = this.getUserIdFromToken(token);
 
     if (type === 'CASH_CUP' && !payWith) {
-      throw new BadRequestException(
-        'payWith is required for CASH_CUP (coins|tickets)',
-      );
+      throw new BadRequestException('payWith is required for CASH_CUP (coins|tickets)');
     }
 
     const method: 'coins' | 'tickets' = payWith ?? 'coins';
@@ -475,19 +484,10 @@ export class TournamentService {
               });
 
               await tx.tournamentParticipant.create({
-                data: {
-                  userId,
-                  tournamentId: tournament.id,
-                  payWith: method,
-                  score: 0,
-                },
+                data: { userId, tournamentId: tournament.id, payWith: method, score: 0 },
               });
 
-              return {
-                joined: true,
-                tournamentId: tournament.id,
-                via: 'tickets' as const,
-              };
+              return { joined: true, tournamentId: tournament.id, via: 'tickets' as const };
             }
 
             // coins
@@ -511,19 +511,10 @@ export class TournamentService {
             });
 
             await tx.tournamentParticipant.create({
-              data: {
-                userId,
-                tournamentId: tournament.id,
-                payWith: method,
-                score: 0,
-              },
+              data: { userId, tournamentId: tournament.id, payWith: method, score: 0 },
             });
 
-            return {
-              joined: true,
-              tournamentId: tournament.id,
-              via: 'coins' as const,
-            };
+            return { joined: true, tournamentId: tournament.id, via: 'coins' as const };
           }),
         );
 
@@ -531,9 +522,7 @@ export class TournamentService {
         try {
           await this.ensureCashCupBotsIfHumans(tournament.id);
         } catch (e) {
-          this.logger.warn(
-            `[BOTS] ensureCashCupBotsIfHumans failed: ${String(e)}`,
-          );
+          this.logger.warn(`[BOTS] ensureCashCupBotsIfHumans failed: ${String(e)}`);
         }
 
         return res;
@@ -576,19 +565,10 @@ export class TournamentService {
             });
 
             await tx.tournamentParticipant.create({
-              data: {
-                userId,
-                tournamentId: tournament.id,
-                payWith: method,
-                score: 0,
-              },
+              data: { userId, tournamentId: tournament.id, payWith: method, score: 0 },
             });
 
-            return {
-              joined: true,
-              tournamentId: tournament.id,
-              via: 'tickets' as const,
-            };
+            return { joined: true, tournamentId: tournament.id, via: 'tickets' as const };
           }
 
           const u = await tx.user.findUnique({
@@ -611,19 +591,10 @@ export class TournamentService {
           });
 
           await tx.tournamentParticipant.create({
-            data: {
-              userId,
-              tournamentId: tournament.id,
-              payWith: method,
-              score: 0,
-            },
+            data: { userId, tournamentId: tournament.id, payWith: method, score: 0 },
           });
 
-          return {
-            joined: true,
-            tournamentId: tournament.id,
-            via: 'coins' as const,
-          };
+          return { joined: true, tournamentId: tournament.id, via: 'coins' as const };
         }),
       );
     } catch (e: any) {
@@ -679,7 +650,7 @@ export class TournamentService {
 
       const now = new Date();
 
-      // берем только турниры (без include participants) — легче
+      // легче: без include participants
       const cups = await this.dbGuard(() =>
         this.prisma.tournament.findMany({
           where: {
@@ -706,7 +677,8 @@ export class TournamentService {
         const humanScores = humans.map((h) => h.score);
         const humanMax = humanScores.length ? Math.max(...humanScores) : 0;
 
-        if (humanMax <= 0) continue; // пока люди не начали — боты 0
+        // пока люди не начали играть — боты стоят 0
+        if (humanMax <= 0) continue;
 
         const humanAvg = humanScores.length
           ? Math.floor(humanScores.reduce((a, b) => a + b, 0) / humanScores.length)
@@ -722,8 +694,10 @@ export class TournamentService {
         const tx: Prisma.PrismaPromise<any>[] = [];
 
         for (const b of bots) {
-          if (b.score > 0) continue; // уже прыгнул
+          // бот уже "сыграл"
+          if (b.score > 0) continue;
 
+          // детерминированное время jump (30%..80%)
           const r = this.hash01(`cup:${t.id}:bot:${b.userId}`);
           const jumpAt =
             this.BOT_JUMP_WINDOW_FROM +
@@ -740,9 +714,11 @@ export class TournamentService {
 
           let target = humanAvg + Math.floor(Math.random() * 120) - 60;
 
+          // cap: строго ниже top человека
           const cap = Math.max(0, Math.min(humanMax - 1, humanMax - behind));
           if (target > cap) target = cap;
 
+          // редкий “почти догнал”, но всё равно ниже humanMax
           if (Math.random() < this.BOT_RARE_SPIKE_CHANCE) {
             target = Math.max(0, humanMax - (2 + Math.floor(Math.random() * 8)));
             if (target >= humanMax) target = humanMax - 1;
@@ -776,7 +752,7 @@ export class TournamentService {
   // ───────────────── FINISH ─────────────────
   @Cron(CronExpression.EVERY_MINUTE)
   async finishExpiredTournaments() {
-    if (this.finishTickRunning) return;
+    if (this.finishTickRunning) return 0;
     this.finishTickRunning = true;
 
     try {
@@ -793,7 +769,7 @@ export class TournamentService {
         const sorted = [...t.participants].sort((a, b) => b.score - a.score);
         const humans = sorted.filter((p) => !p.user?.isBot);
 
-        // ✅ если людей нет — закрываем
+        // ✅ если людей нет — просто закрываем
         if (humans.length === 0) {
           await this.dbGuard(() =>
             this.prisma.tournament.update({
@@ -892,10 +868,7 @@ export class TournamentService {
         this.markDbDown(e);
         return 0;
       }
-      this.logger.error(
-        `[finishExpiredTournaments] ${e?.message ?? String(e)}`,
-        e?.stack,
-      );
+      this.logger.error(`[finishExpiredTournaments] ${e?.message ?? String(e)}`, e?.stack);
       return 0;
     } finally {
       this.finishTickRunning = false;
@@ -906,24 +879,22 @@ export class TournamentService {
   async getCurrentTournament(type: TournamentType, token?: string) {
     const tournament = await this.getOrCreateTournament(type);
 
-    // ⚠️ ВАЖНО:
-    // НЕ вызываем ensureCashCupBotsIfHumans здесь — иначе фронт будет DDOSить БД.
-    // Боты добавляются после join (и это достаточно).
+    // ⚠️ НЕ вызываем ensureCashCupBotsIfHumans здесь — иначе фронт DDOSит БД.
+    // Боты добавляются только после join.
 
     let joined = false;
     let coins = 0;
     let ticketsCount = 0;
-    let userId: number | null = null;
 
     if (token) {
       try {
-        userId = this.getUserIdFromToken(token);
+        const uid = this.getUserIdFromToken(token); // ✅ number (не null)
 
         joined = !!(await this.dbGuard(() =>
           this.prisma.tournamentParticipant.findUnique({
             where: {
               userId_tournamentId: {
-                userId,
+                userId: uid, // ✅ fixed TS2322
                 tournamentId: tournament.id,
               },
             },
@@ -932,7 +903,7 @@ export class TournamentService {
 
         const user = await this.dbGuard(() =>
           this.prisma.user.findUnique({
-            where: { id: userId! },
+            where: { id: uid },
             select: { coins: true },
           }),
         );
@@ -941,7 +912,7 @@ export class TournamentService {
 
         ticketsCount = await this.dbGuard(() =>
           this.prisma.ticket.count({
-            where: { userId: userId!, usedAt: null },
+            where: { userId: uid, usedAt: null },
           }),
         );
       } catch {
@@ -960,10 +931,7 @@ export class TournamentService {
 
     const now = new Date();
     const timeLeftMs = Math.max(0, tournament.endsAt.getTime() - now.getTime());
-    const joinLeftMs = Math.max(
-      0,
-      tournament.joinDeadline.getTime() - now.getTime(),
-    );
+    const joinLeftMs = Math.max(0, tournament.joinDeadline.getTime() - now.getTime());
 
     return {
       tournamentId: tournament.id,
