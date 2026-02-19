@@ -24,35 +24,15 @@ export class TournamentService {
 
   // ───────────────── BOT SETTINGS ─────────────────
   private readonly CASHCUP_FILL_TO = 8; // хотим видеть 8 участников
-  private readonly CASHCUP_MAX_BOTS = 7; // ✅ чтобы когда ты 1 — можно добить до 8
+  private readonly CASHCUP_MAX_BOTS = 7; // максимум ботов, чтобы если ты 1 — можно добить до 8
+  private readonly BOT_POOL_MIN = 30; // сколько ботов хотим иметь в базе минимум
   private readonly BOT_TICK_MAX_ADD = 80;
   private readonly BOT_TICK_MIN_ADD = 20;
 
   private readonly BOT_NAMES = [
-    'Aram',
-    'Mariam',
-    'Gor',
-    'Lilit',
-    'Hayk',
-    'Nare',
-    'Karen',
-    'Sona',
-    'Levon',
-    'Ani',
-    'Tigran',
-    'Mane',
-    'Vardan',
-    'Eva',
-    'Artur',
-    'Mika',
-    'Narek',
-    'David',
-    'Ashot',
-    'Lusine',
-    'Mher',
-    'Meline',
-    'Ruben',
-    'Tatev',
+    'Aram', 'Mariam', 'Gor', 'Lilit', 'Hayk', 'Nare', 'Karen', 'Sona',
+    'Levon', 'Ani', 'Tigran', 'Mane', 'Vardan', 'Eva', 'Artur', 'Mika',
+    'Narek', 'David', 'Ashot', 'Lusine', 'Mher', 'Meline', 'Ruben', 'Tatev',
   ];
 
   constructor(
@@ -82,11 +62,7 @@ export class TournamentService {
   }
 
   private formatPlace(place: 1 | 2 | 3) {
-    return place === 1
-      ? '🥇 1 место'
-      : place === 2
-        ? '🥈 2 место'
-        : '🥉 3 место';
+    return place === 1 ? '🥇 1 место' : place === 2 ? '🥈 2 место' : '🥉 3 место';
   }
 
   private async safeSendTelegramMessage(telegramId: string, text: string) {
@@ -134,11 +110,10 @@ export class TournamentService {
     return x;
   }
 
-  // ───────────────── CASH CUP PRIZES ─────────────────
+  // ───────────────── PRIZES ─────────────────
   private calculateCashCupPrizes(prizePool: number, count: number): number[] {
     if (count === 0) return [];
     if (count === 1) return [prizePool];
-
     return [
       Math.floor(prizePool * 0.5),
       Math.floor(prizePool * 0.2),
@@ -146,10 +121,8 @@ export class TournamentService {
     ];
   }
 
-  // ───────────────── STANDARD (HOURLY / DAILY) PRIZES ─────────────────
   private calculateStandardPrizes(prizePool: number, count: number): number[] {
     if (count < 2) return [];
-
     return [
       Math.floor(prizePool * 0.4),
       Math.floor(prizePool * 0.2),
@@ -161,9 +134,51 @@ export class TournamentService {
   private pickBotName() {
     const idx = Math.floor(Math.random() * this.BOT_NAMES.length);
     const base = this.BOT_NAMES[idx];
-    const suffix =
-      Math.random() < 0.25 ? `_${Math.floor(Math.random() * 99)}` : '';
+    const suffix = Math.random() < 0.25 ? `_${Math.floor(Math.random() * 99)}` : '';
     return `${base}${suffix}`;
+  }
+
+  private genBotTelegramId() {
+    // telegramId у тебя обязателен и уникален → делаем уникальный для каждого бота
+    // формат: bot:<timestamp>:<random>
+    const rnd = Math.random().toString(36).slice(2, 10);
+    return `bot:${Date.now()}:${rnd}`;
+  }
+
+  /**
+   * ✅ Гарантирует, что в базе есть пул ботов (isBot=true).
+   * Если ботов мало/нет — создаёт до BOT_POOL_MIN.
+   */
+  private async ensureBotPool() {
+    // если в твоей схеме НЕТ поля isBot — всё упадёт.
+    // но у тебя код уже использует user.isBot → значит поле должно быть в Prisma.
+    const botCount = await this.prisma.user.count({ where: { isBot: true } });
+
+    if (botCount >= this.BOT_POOL_MIN) return;
+
+    const need = this.BOT_POOL_MIN - botCount;
+    this.logger.warn(`[BOTS] Bot pool low: have=${botCount}, creating=${need}`);
+
+    // создаём пачкой, без конфликта telegramId
+    const data: Prisma.UserCreateManyInput[] = Array.from({ length: need }).map(() => {
+      const name = this.pickBotName();
+      return {
+        telegramId: this.genBotTelegramId(),
+        username: name,
+        firstName: name,
+        isBot: true,
+        // остальные поля у тебя с default — можно не задавать
+      } as any;
+    });
+
+    try {
+      await this.prisma.user.createMany({
+        data,
+        skipDuplicates: true,
+      });
+    } catch (e) {
+      this.logger.warn(`[BOTS] createMany failed: ${String(e)}`);
+    }
   }
 
   private async rotateBotNamesForTournament(tournamentId: number) {
@@ -198,10 +213,14 @@ export class TournamentService {
   }
 
   /**
-   * ✅ 100% добавляет ботов в CASH_CUP до нужного количества участников.
-   * Работает даже если ты 1 человек.
+   * ✅ 100% добивает CASH_CUP до нужного количества участников,
+   * если в базе есть боты (или мы их создадим через ensureBotPool()).
    */
   private async ensureCashCupBots(tournamentId: number) {
+    // 1) убедимся что боты вообще есть
+    await this.ensureBotPool();
+
+    // 2) возьмём текущих участников турнира
     const participants = await this.prisma.tournamentParticipant.findMany({
       where: { tournamentId },
       include: { user: true },
@@ -212,7 +231,7 @@ export class TournamentService {
 
     const botsInCup = participants.filter((p) => p.user?.isBot).length;
 
-    // нужно добить до 8
+    // сколько нужно добить до 8
     let needBots = this.CASHCUP_FILL_TO - participants.length;
 
     // но не больше лимита ботов
@@ -220,6 +239,7 @@ export class TournamentService {
 
     if (needBots <= 0) return;
 
+    // берём свободных ботов, которых нет в этом турнире
     const botUsers = await this.prisma.user.findMany({
       where: {
         isBot: true,
@@ -230,10 +250,11 @@ export class TournamentService {
     });
 
     if (!botUsers.length) {
-      this.logger.warn('[BOTS] No bot users found in DB (isBot=true)');
+      this.logger.warn(`[BOTS] No free bots available (all are busy). Need=${needBots}`);
       return;
     }
 
+    // создаём участников
     await this.prisma.tournamentParticipant.createMany({
       data: botUsers.map((u) => ({
         userId: u.id,
@@ -244,6 +265,7 @@ export class TournamentService {
       skipDuplicates: true,
     });
 
+    // переименуем ботов в этом турнире
     await this.rotateBotNamesForTournament(tournamentId);
 
     this.logger.log(
@@ -296,7 +318,6 @@ export class TournamentService {
         },
       });
     } else if (tournament.status !== 'ACTIVE') {
-      // ✅ если вдруг в базе PLANNED — активируем
       tournament = await this.prisma.tournament.update({
         where: { id: tournament.id },
         data: { status: 'ACTIVE' },
@@ -306,6 +327,7 @@ export class TournamentService {
     return tournament;
   }
 
+  // ───────────────── JOIN ─────────────────
   async join(
     token: string,
     type: TournamentType,
@@ -313,14 +335,8 @@ export class TournamentService {
   ) {
     const userId = this.getUserIdFromToken(token);
 
-    this.logger.log(
-      `[JOIN] request userId=${userId} type=${type} payWith=${payWith}`,
-    );
-
     if (type === 'CASH_CUP' && !payWith) {
-      throw new BadRequestException(
-        'payWith is required for CASH_CUP (coins|tickets)',
-      );
+      throw new BadRequestException('payWith is required for CASH_CUP (coins|tickets)');
     }
 
     const method: 'coins' | 'tickets' = payWith ?? 'coins';
@@ -502,11 +518,7 @@ export class TournamentService {
       where: { id: tournamentId },
     });
 
-    if (
-      !tournament ||
-      tournament.status !== 'ACTIVE' ||
-      new Date() > tournament.endsAt
-    ) {
+    if (!tournament || tournament.status !== 'ACTIVE' || new Date() > tournament.endsAt) {
       return { updated: false };
     }
 
@@ -558,9 +570,7 @@ export class TournamentService {
       for (const b of bots) {
         let add =
           this.BOT_TICK_MIN_ADD +
-          Math.floor(
-            Math.random() * (this.BOT_TICK_MAX_ADD - this.BOT_TICK_MIN_ADD + 1),
-          );
+          Math.floor(Math.random() * (this.BOT_TICK_MAX_ADD - this.BOT_TICK_MIN_ADD + 1));
 
         if (b.score >= softCap) add = Math.floor(Math.random() * 10);
 
@@ -592,6 +602,8 @@ export class TournamentService {
 
     for (const t of tournaments) {
       const sorted = [...t.participants].sort((a, b) => b.score - a.score);
+
+      // ✅ призы только людям
       const humans = sorted.filter((p) => !p.user?.isBot);
 
       // 1 человек → refund
@@ -630,8 +642,7 @@ export class TournamentService {
       }
 
       let prizes: number[] = [];
-      if (t.type === 'CASH_CUP')
-        prizes = this.calculateCashCupPrizes(t.prizePool, humans.length);
+      if (t.type === 'CASH_CUP') prizes = this.calculateCashCupPrizes(t.prizePool, humans.length);
       else prizes = this.calculateStandardPrizes(t.prizePool, humans.length);
 
       const winners = humans.slice(0, prizes.length);
@@ -677,7 +688,7 @@ export class TournamentService {
   async getCurrentTournament(type: TournamentType, token?: string) {
     const tournament = await this.getOrCreateTournament(type);
 
-    // ✅ ВСЕГДА добиваем ботов в CASH_CUP (без проверки status)
+    // ✅ на каждом заходе в CASH_CUP — добиваем ботами
     if (tournament.type === 'CASH_CUP') {
       try {
         await this.ensureCashCupBots(tournament.id);
@@ -726,10 +737,7 @@ export class TournamentService {
 
     const now = new Date();
     const timeLeftMs = Math.max(0, tournament.endsAt.getTime() - now.getTime());
-    const joinLeftMs = Math.max(
-      0,
-      tournament.joinDeadline.getTime() - now.getTime(),
-    );
+    const joinLeftMs = Math.max(0, tournament.joinDeadline.getTime() - now.getTime());
 
     return {
       tournamentId: tournament.id,
