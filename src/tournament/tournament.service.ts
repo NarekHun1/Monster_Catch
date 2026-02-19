@@ -22,6 +22,19 @@ export type TournamentType = 'HOURLY' | 'DAILY' | 'CASH_CUP';
 export class TournamentService {
   private readonly logger = new Logger(TournamentService.name);
 
+  // ───────────────── BOT SETTINGS ─────────────────
+  private readonly CASHCUP_FILL_TO = 8;   // сколько участников хотим видеть
+  private readonly CASHCUP_MAX_BOTS = 5;  // максимум ботов в одном cash cup
+  private readonly BOT_TICK_MAX_ADD = 80; // max прирост за тик
+  private readonly BOT_TICK_MIN_ADD = 20; // min прирост за тик
+
+  // имена, которые будут рандомно ставиться ботам (username/firstName)
+  private readonly BOT_NAMES = [
+    'Aram', 'Mariam', 'Gor', 'Lilit', 'Hayk', 'Nare', 'Karen', 'Sona',
+    'Levon', 'Ani', 'Tigran', 'Mane', 'Vardan', 'Eva', 'Artur', 'Mika',
+    'Narek', 'David', 'Ashot', 'Lusine', 'Mher', 'Meline', 'Ruben', 'Tatev',
+  ];
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -41,6 +54,7 @@ export class TournamentService {
       throw new UnauthorizedException('Invalid token');
     }
   }
+
   private formatTournamentTitle(type: TournamentType) {
     if (type === 'HOURLY') return '⏱ HOURLY';
     if (type === 'DAILY') return '📅 DAILY';
@@ -111,6 +125,7 @@ export class TournamentService {
       Math.floor(prizePool * 0.1),
     ];
   }
+
   // ───────────────── STANDARD (HOURLY / DAILY) PRIZES ─────────────────
   private calculateStandardPrizes(prizePool: number, count: number): number[] {
     if (count < 2) return [];
@@ -120,6 +135,104 @@ export class TournamentService {
       Math.floor(prizePool * 0.2), // 🥈 20%
       Math.floor(prizePool * 0.1), // 🥉 10%
     ];
+  }
+
+  // ───────────────── BOT HELPERS ─────────────────
+  private pickBotName(seed?: number) {
+    // простой псевдорандом (чтобы не было одинаковых подряд)
+    const idx = Math.floor(Math.random() * this.BOT_NAMES.length);
+    const base = this.BOT_NAMES[idx];
+    // иногда добавим цифру
+    const suffix = Math.random() < 0.25 ? `_${Math.floor(Math.random() * 99)}` : '';
+    return `${base}${suffix}`;
+  }
+
+  private async rotateBotNamesForTournament(tournamentId: number) {
+    // Меняем username/firstName только у ботов, которые участвуют в турнире.
+    // telegramId не трогаем (он уникальный).
+    const bots = await this.prisma.tournamentParticipant.findMany({
+      where: { tournamentId, user: { isBot: true } },
+      include: { user: true },
+    });
+
+    if (!bots.length) return;
+
+    const tx: Prisma.PrismaPromise<any>[] = [];
+    const used = new Set<string>();
+
+    for (const p of bots) {
+      let name = this.pickBotName();
+      // гарантируем уникальность в рамках турнира
+      let guard = 0;
+      while (used.has(name) && guard < 10) {
+        name = this.pickBotName();
+        guard++;
+      }
+      used.add(name);
+
+      tx.push(
+        this.prisma.user.update({
+          where: { id: p.userId },
+          data: {
+            username: name,
+            firstName: name,
+          },
+        }),
+      );
+    }
+
+    await this.prisma.$transaction(tx);
+  }
+
+  private async ensureCashCupBots(tournamentId: number) {
+    // Берём текущих участников
+    const participants = await this.prisma.tournamentParticipant.findMany({
+      where: { tournamentId },
+      include: { user: true },
+    });
+
+    const humans = participants.filter((p) => !p.user?.isBot);
+    const bots = participants.filter((p) => p.user?.isBot);
+
+    // если людей много — боты не нужны
+    if (humans.length >= this.CASHCUP_FILL_TO) return;
+
+    const needTotal = this.CASHCUP_FILL_TO;
+    const needBots = Math.min(
+      this.CASHCUP_MAX_BOTS - bots.length,
+      needTotal - (humans.length + bots.length),
+    );
+
+    if (needBots <= 0) return;
+
+    // берём свободных ботов, которых нет в этом турнире
+    const botUsers = await this.prisma.user.findMany({
+      where: {
+        isBot: true,
+        tournaments: { none: { tournamentId } },
+      },
+      take: needBots,
+      orderBy: { id: 'asc' },
+    });
+
+    if (!botUsers.length) return;
+
+    await this.prisma.tournamentParticipant.createMany({
+      data: botUsers.map((u) => ({
+        userId: u.id,
+        tournamentId,
+        payWith: 'coins',
+        score: 0,
+      })),
+      skipDuplicates: true,
+    });
+
+    // После добавления — сразу “переименуем”, чтобы каждый cash cup выглядел свежим
+    await this.rotateBotNamesForTournament(tournamentId);
+
+    this.logger.log(
+      `[BOTS] Added=${botUsers.length} to CASH_CUP tournamentId=${tournamentId}`,
+    );
   }
 
   // ───────────────── CREATE / GET ─────────────────
@@ -132,14 +245,9 @@ export class TournamentService {
 
     if (type === 'HOURLY') {
       startsAt = this.floorToHour(now);
-
-      // ✅ длится 1 час
       endsAt = new Date(startsAt);
       endsAt.setHours(endsAt.getHours() + 1);
-
-      // ✅ вход весь час
       joinDeadline = new Date(endsAt);
-
       entryFee = 50;
     } else if (type === 'DAILY') {
       startsAt = this.floorToDay(now);
@@ -187,7 +295,6 @@ export class TournamentService {
       `[JOIN] request userId=${userId} type=${type} payWith=${payWith}`,
     );
 
-    // CASH_CUP: payWith обязателен
     if (type === 'CASH_CUP' && !payWith) {
       this.logger.warn(
         `[JOIN][ERROR] CASH_CUP without payWith userId=${userId}`,
@@ -220,11 +327,10 @@ export class TournamentService {
     }
 
     try {
-      // ───────────────── CASH CUP ─────────────────
       if (tournament.type === 'CASH_CUP') {
         const REQUIRED = 10;
 
-        return await this.prisma.$transaction(async (tx) => {
+        const res = await this.prisma.$transaction(async (tx) => {
           const exists = await tx.tournamentParticipant.findUnique({
             where: {
               userId_tournamentId: { userId, tournamentId: tournament.id },
@@ -320,6 +426,15 @@ export class TournamentService {
 
           return { joined: true, tournamentId: tournament.id, via: 'coins' };
         });
+
+        // ✅ после join — заполним ботами (без транзакции, отдельно)
+        try {
+          await this.ensureCashCupBots(tournament.id);
+        } catch (e) {
+          this.logger.warn(`[BOTS] ensureCashCupBots failed: ${String(e)}`);
+        }
+
+        return res;
       }
 
       // ─────────────── HOURLY / DAILY ───────────────
@@ -411,7 +526,6 @@ export class TournamentService {
         return { joined: true, tournamentId: tournament.id, via: 'coins' };
       });
     } catch (e: any) {
-      // защита от гонки
       if (e?.code === 'P2002') {
         this.logger.warn(
           `[JOIN][RACE] participant already exists userId=${userId}`,
@@ -429,6 +543,14 @@ export class TournamentService {
   // ───────────────── SUBMIT SCORE ─────────────────
   async submitScore(token: string, tournamentId: number, score: number) {
     const userId = this.getUserIdFromToken(token);
+
+    // ✅ анти-мусор
+    score = Math.floor(score);
+    if (!Number.isFinite(score) || score < 0) return { updated: false };
+
+    // (опционально) быстрый античит лимит
+    // подстрой под свою игру
+    score = Math.min(score, 50000);
 
     const tournament = await this.prisma.tournament.findUnique({
       where: { id: tournamentId },
@@ -458,6 +580,70 @@ export class TournamentService {
     return { updated: true };
   }
 
+  // ───────────────── BOT TICKER ─────────────────
+  // делает турнир "живым": боты набирают очки, но не душат людей
+  @Cron(CronExpression.EVERY_10_SECONDS)
+  async tickCashCupBots() {
+    const now = new Date();
+
+    const cups = await this.prisma.tournament.findMany({
+      where: {
+        status: 'ACTIVE',
+        type: 'CASH_CUP',
+        startsAt: { lte: now },
+        endsAt: { gt: now },
+      },
+      include: {
+        participants: { include: { user: true } },
+      },
+    });
+
+    for (const t of cups) {
+      const bots = t.participants.filter((p) => p.user?.isBot);
+      if (!bots.length) continue;
+
+      const humans = t.participants.filter((p) => !p.user?.isBot);
+
+      const humanScores = humans.map((h) => h.score);
+      const humanMax = humanScores.length ? Math.max(...humanScores) : 0;
+      const humanAvg = humanScores.length
+        ? Math.floor(humanScores.reduce((a, b) => a + b, 0) / humanScores.length)
+        : 250;
+
+      // мягкий потолок: боты держатся около среднего и чуть ниже лидера
+      const softCap = Math.max(humanAvg + 120, humanMax - 80);
+
+      const tx: Prisma.PrismaPromise<any>[] = [];
+
+      for (const b of bots) {
+        let add =
+          this.BOT_TICK_MIN_ADD +
+          Math.floor(Math.random() * (this.BOT_TICK_MAX_ADD - this.BOT_TICK_MIN_ADD + 1));
+
+        // если уже дошёл до softCap — тормозим
+        if (b.score >= softCap) add = Math.floor(Math.random() * 10);
+
+        // запрет сильно обгонять людей
+        if (b.score + add > humanMax + 20) {
+          add = Math.max(0, (humanMax + 20) - b.score);
+        }
+
+        if (add <= 0) continue;
+
+        tx.push(
+          this.prisma.tournamentParticipant.update({
+            where: { id: b.id },
+            data: { score: { increment: add } },
+          }),
+        );
+      }
+
+      if (tx.length) {
+        await this.prisma.$transaction(tx);
+      }
+    }
+  }
+
   // ───────────────── FINISH ─────────────────
   @Cron(CronExpression.EVERY_MINUTE)
   async finishExpiredTournaments() {
@@ -472,9 +658,13 @@ export class TournamentService {
 
     for (const t of tournaments) {
       const sorted = [...t.participants].sort((a, b) => b.score - a.score);
-      // ───────────── 1 PLAYER → REFUND (same payWith) ─────────────
-      if (sorted.length === 1) {
-        const p = sorted[0];
+
+      // ✅ люди отдельно (боты не получают призы)
+      const humans = sorted.filter((p) => !p.user?.isBot);
+
+      // ───────────── 1 HUMAN → REFUND ─────────────
+      if (humans.length === 1) {
+        const p = humans[0];
         const payWith = (p as any).payWith as 'coins' | 'tickets' | undefined;
 
         const fee = t.entryFee;
@@ -483,7 +673,7 @@ export class TournamentService {
           await this.prisma.ticket.createMany({
             data: Array.from({ length: fee }, () => ({
               userId: p.userId,
-              type: 'TOURNAMENT', // ✅ у тебя есть в enum TicketType
+              type: 'TOURNAMENT',
             })),
           });
         } else {
@@ -507,19 +697,21 @@ export class TournamentService {
 
         continue;
       }
-      // призы как у тебя
+
+      // призы
       let prizes: number[] = [];
 
       if (t.type === 'CASH_CUP') {
-        prizes = this.calculateCashCupPrizes(t.prizePool, sorted.length);
+        prizes = this.calculateCashCupPrizes(t.prizePool, humans.length);
       } else {
-        prizes = this.calculateStandardPrizes(t.prizePool, sorted.length);
+        prizes = this.calculateStandardPrizes(t.prizePool, humans.length);
       }
 
-      // начислить + закрыть
+      const winners = humans.slice(0, prizes.length);
+
       const tx: Prisma.PrismaPromise<any>[] = [];
 
-      sorted.slice(0, prizes.length).forEach((p, i) => {
+      winners.forEach((p, i) => {
         tx.push(
           this.prisma.user.update({
             where: { id: p.userId },
@@ -537,8 +729,8 @@ export class TournamentService {
 
       await this.prisma.$transaction(tx);
 
-      // ✅ уведомить топ-3 (только тем, у кого есть telegramId)
-      const top = sorted.slice(0, Math.min(3, prizes.length));
+      // ✅ уведомить топ-3 людей
+      const top = winners.slice(0, Math.min(3, prizes.length));
       for (let i = 0; i < top.length; i++) {
         const tg = top[i].user?.telegramId;
         if (!tg) continue;
@@ -558,6 +750,15 @@ export class TournamentService {
   // ───────────────── CURRENT ─────────────────
   async getCurrentTournament(type: TournamentType, token?: string) {
     const tournament = await this.getOrCreateTournament(type);
+
+    // ✅ при заходе в CASH_CUP добиваем ботами
+    if (tournament.type === 'CASH_CUP' && tournament.status === 'ACTIVE') {
+      try {
+        await this.ensureCashCupBots(tournament.id);
+      } catch (e) {
+        this.logger.warn(`[BOTS] ensureCashCupBots failed: ${String(e)}`);
+      }
+    }
 
     let joined = false;
     let coins = 0;
@@ -596,10 +797,9 @@ export class TournamentService {
       orderBy: { score: 'desc' },
       take: 20,
     });
+
     const now = new Date();
-
     const timeLeftMs = Math.max(0, tournament.endsAt.getTime() - now.getTime());
-
     const joinLeftMs = Math.max(
       0,
       tournament.joinDeadline.getTime() - now.getTime(),

@@ -44,11 +44,11 @@ model User {
   FarmSlot           FarmSlot[]
   meat               Int                     @default(0)
   MonsterHunt        MonsterHunt[]
-
+  isBot              Boolean                 @default(false)
   // ✅ Market
-  marketUnlocked  Boolean         @default(false)
-  marketSales     MarketListing[] @relation("MarketSeller")
-  marketPurchases MarketListing[] @relation("MarketBuyer")
+  marketUnlocked     Boolean                 @default(false)
+  marketSales        MarketListing[]         @relation("MarketSeller")
+  marketPurchases    MarketListing[]         @relation("MarketBuyer")
 }
 
 model Game {
