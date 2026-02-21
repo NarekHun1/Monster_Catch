@@ -84,13 +84,36 @@ export class TournamentBroadcastService {
 
       this.logger.log('✅ Telegram sendPhoto success');
     } catch (e: any) {
-      const desc = e?.response?.description || e?.message || String(e);
+      // ✅ Basic identity
+      this.logger.error(
+        `❌ Telegram sendPhoto failed: ${e?.message || e?.description || String(e)}`,
+        e?.stack,
+      );
 
-      this.logger.error('❌ Telegram sendPhoto failed', {
-        description: desc,
-        response: e?.response?.data,
-        error: e,
-      });
+      // ✅ Useful structured debug (works even when response is undefined)
+      const debug = {
+        name: e?.name,
+        message: e?.message,
+        code: e?.code,
+        status: e?.status,
+        description: e?.response?.description ?? e?.description,
+        response: e?.response, // some libs
+        responseData: e?.response?.data, // axios-style
+        on: e?.on, // Telegraf sometimes uses this
+        method: e?.method,
+        cause: e?.cause
+          ? {
+              name: e.cause.name,
+              message: e.cause.message,
+              code: e.cause.code,
+            }
+          : undefined,
+      };
+
+      this.logger.error(`sendPhoto debug: ${JSON.stringify(debug)}`);
+
+      const desc =
+        e?.response?.description || e?.description || e?.message || String(e);
 
       throw new BadRequestException(`Telegram sendPhoto failed: ${desc}`);
     }
