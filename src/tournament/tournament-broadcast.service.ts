@@ -1,10 +1,22 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  OnModuleInit,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { InjectBot } from 'nestjs-telegraf';
 import { Telegraf } from 'telegraf';
 import { Readable } from 'node:stream';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+type MulterFile = {
+  originalname: string;
+  mimetype: string;
+  size: number;
+  buffer: Buffer;
+};
 
 function stripDataUrl(base64: string) {
   const m = base64.match(/^data:([^;]+);base64,(.*)$/);
@@ -13,7 +25,7 @@ function stripDataUrl(base64: string) {
 }
 
 @Injectable()
-export class TournamentBroadcastService {
+export class TournamentBroadcastService implements OnModuleInit {
   private readonly logger = new Logger(TournamentBroadcastService.name);
 
   // ✅ ТВОЙ ADMIN TG ID (хардкод)
@@ -24,10 +36,49 @@ export class TournamentBroadcastService {
     @InjectBot() private readonly bot: Telegraf,
   ) {}
 
+  // ✅ При старте регистрируем хендлер, чтобы бот сам отдавал file_id
+  onModuleInit() {
+    this.registerAdminFileIdListener();
+    this.logger.log('✅ Admin file_id listener registered');
+  }
+
+  /**
+   * ✅ Когда ADMIN отправляет боту фото -> бот отвечает file_id
+   * Это решает проблему webhook/getUpdates.
+   */
+  private registerAdminFileIdListener() {
+    this.bot.on('photo', async (ctx) => {
+      try {
+        const fromId = ctx.from?.id;
+        if (!fromId || fromId !== this.ADMIN_TG_ID) return;
+
+        const photos = (ctx.message as any)?.photo as any[] | undefined;
+        if (!photos?.length) return;
+
+        const best = photos[photos.length - 1];
+        const fileId = best?.file_id;
+
+        if (!fileId) return;
+
+        await ctx.reply(
+          `✅ file_id:\n<code>${fileId}</code>\n\n📐 ${best.width}x${best.height} | ${best.file_size ?? '-'} bytes`,
+          { parse_mode: 'HTML' },
+        );
+
+        this.logger.log(`ADMIN photo received -> file_id=${fileId}`);
+      } catch (e: any) {
+        this.logger.error(
+          `registerAdminFileIdListener error: ${e?.message || String(e)}`,
+          e?.stack,
+        );
+      }
+    });
+  }
+
   /**
    * ✅ Upload photo (multipart/form-data) -> send to ADMIN -> return Telegram file_id
    */
-  async photoUploadToTelegramFileId(file: Express.Multer.File) {
+  async photoUploadToTelegramFileId(file: MulterFile) {
     const adminChatId = this.ADMIN_TG_ID;
     if (!Number.isFinite(adminChatId)) {
       throw new BadRequestException('ADMIN_TG_ID must be a number');
@@ -295,61 +346,46 @@ export class TournamentBroadcastService {
       const chatId = Number(u.telegramId);
       if (!Number.isFinite(chatId)) continue;
 
-      try {
-        await this.bot.telegram.sendPhoto(chatId, params.photo, {
-          caption,
-          parse_mode: 'HTML',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🔥 Играть сейчас', url: params.botLink }],
-            ],
-          },
-        });
+      const res = await this.safeSendPhoto(
+        chatId,
+        params.photo,
+        caption,
+        params.botLink,
+      );
 
+      if (res.ok) {
         sent++;
-
-        // ✅ безопасная задержка (чтобы не ловить 429)
         await sleep(120);
-      } catch (e: any) {
-        failed++;
-
-        const desc = e?.response?.description || e?.message || String(e);
-
-        // ✅ если user blocked / chat invalid — помечаем
-        const isBlocked =
-          String(desc).includes('bot was blocked') ||
-          String(desc).includes('chat not found') ||
-          String(desc).includes('user is deactivated');
-
-        if (isBlocked) {
-          blocked++;
-          try {
-            await this.prisma.user.update({
-              where: { id: u.id },
-              data: { isBlocked: true },
-            });
-          } catch {}
-        }
-
-        // ✅ rate limit (429)
-        const retryAfter = e?.response?.parameters?.retry_after;
-        if (typeof retryAfter === 'number') {
-          this.logger.warn(`⏳ 429 retry_after=${retryAfter}s`);
-          await sleep((retryAfter + 1) * 1000);
-        } else {
-          await sleep(250);
-        }
-
-        this.logger.warn(`Broadcast failed to ${u.telegramId}: ${desc}`);
+        continue;
       }
+
+      failed++;
+
+      if (res.isBlocked) {
+        blocked++;
+        try {
+          await this.prisma.user.update({
+            where: { id: u.id },
+            data: { isBlocked: true },
+          });
+        } catch {}
+      }
+
+      if (typeof res.retryAfter === 'number') {
+        this.logger.warn(`⏳ 429 retry_after=${res.retryAfter}s`);
+        await sleep((res.retryAfter + 1) * 1000);
+      } else {
+        await sleep(250);
+      }
+
+      this.logger.warn(`Broadcast failed to ${u.telegramId}: ${res.desc}`);
     }
 
     return { total: users.length, sent, failed, blocked };
   }
+
   /**
-   * ✅ NEW: broadcast only N users one-time (for testing)
-   * - if userIds provided: sends only to those users
-   * - else: takes first N users by id asc
+   * ✅ Broadcast only N users (test)
    */
   async broadcastBigTournamentToNOnce(params: {
     photo: string;
@@ -372,10 +408,7 @@ export class TournamentBroadcastService {
     ].join('\n');
 
     const where: any = { telegramId: { not: '' }, isBlocked: false };
-
-    if (params.userIds?.length) {
-      where.id = { in: params.userIds };
-    }
+    if (params.userIds?.length) where.id = { in: params.userIds };
 
     const users = await this.prisma.user.findMany({
       where,
@@ -391,7 +424,6 @@ export class TournamentBroadcastService {
     let sent = 0;
     let failed = 0;
     let blocked = 0;
-
     const ids: number[] = [];
 
     for (const u of users) {
@@ -409,7 +441,7 @@ export class TournamentBroadcastService {
 
       if (res.ok) {
         sent++;
-        await sleep(120); // чуть медленнее, чтоб не ловить 429
+        await sleep(120);
         continue;
       }
 

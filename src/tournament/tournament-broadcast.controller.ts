@@ -46,7 +46,11 @@ export class TournamentBroadcastController {
       filename: body.filename,
     });
   }
-
+  @Post('debug-last-photo')
+  async debugLastPhoto(@Headers('x-broadcast-secret') secret: string) {
+    this.guard(secret);
+    return this.service.debugGetLastPhotoFileId();
+  }
   /**
    * ✅ multipart upload -> Telegram file_id
    * form-data: photo=<file>
@@ -58,7 +62,10 @@ export class TournamentBroadcastController {
       limits: { fileSize: 8 * 1024 * 1024 },
       fileFilter: (req, file, cb) => {
         if (!file.mimetype?.startsWith('image/')) {
-          return cb(new BadRequestException('Only image files are allowed'), false);
+          return cb(
+            new BadRequestException('Only image files are allowed'),
+            false,
+          );
         }
         cb(null, true);
       },
@@ -104,7 +111,12 @@ export class TournamentBroadcastController {
   async bigTournamentTest(
     @Headers('x-broadcast-secret') secret: string,
     @Body()
-    body: { photo: string; botLink?: string; limit?: number; userIds?: number[] },
+    body: {
+      photo: string;
+      botLink?: string;
+      limit?: number;
+      userIds?: number[];
+    },
   ) {
     this.guard(secret);
 
@@ -112,13 +124,18 @@ export class TournamentBroadcastController {
       throw new BadRequestException('photo is required (file_id or https url)');
     }
 
-    const limit = Number.isFinite(body.limit as number) ? Number(body.limit) : 6;
+    const limit = Number.isFinite(body.limit as number)
+      ? Number(body.limit)
+      : 6;
 
     return this.service.broadcastBigTournamentToNOnce({
       photo: body.photo,
       botLink: body.botLink || 'https://t.me/monster_catch_bot',
       limit,
-      userIds: Array.isArray(body.userIds) && body.userIds.length ? body.userIds : undefined,
+      userIds:
+        Array.isArray(body.userIds) && body.userIds.length
+          ? body.userIds
+          : undefined,
     });
   }
 }
