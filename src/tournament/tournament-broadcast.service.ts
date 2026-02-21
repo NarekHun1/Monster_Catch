@@ -39,7 +39,8 @@ export class TournamentBroadcastService {
 
     let buf: Buffer;
     try {
-      buf = Buffer.from(b64, 'base64');
+      const cleaned = b64.replace(/\s+/g, ''); // ✅ убираем \n пробелы
+      buf = Buffer.from(cleaned, 'base64');
     } catch {
       throw new BadRequestException('Invalid base64');
     }
