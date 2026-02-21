@@ -30,28 +30,50 @@ export class TournamentBroadcastService {
     photoBase64: string;
     filename?: string;
   }) {
+    this.logger.log('📥 photoBase64ToTelegramFileId called');
+
     const adminChatId = this.ADMIN_TG_ID;
+
     if (!Number.isFinite(adminChatId)) {
+      this.logger.error(`❌ Invalid ADMIN_TG_ID: ${adminChatId}`);
       throw new BadRequestException('ADMIN_TG_ID must be a number');
     }
+
+    this.logger.log(`📤 Sending photo to adminChatId: ${adminChatId}`);
 
     const { b64 } = stripDataUrl(input.photoBase64);
 
     let buf: Buffer;
+
     try {
-      const cleaned = b64.replace(/\s+/g, ''); // ✅ убираем \n пробелы
+      const cleaned = b64.replace(/\s+/g, '');
       buf = Buffer.from(cleaned, 'base64');
-    } catch {
+
+      this.logger.log(
+        `🧾 Base64 decoded successfully | Size: ${buf.length} bytes`,
+      );
+    } catch (err) {
+      this.logger.error('❌ Invalid base64 provided', err);
       throw new BadRequestException('Invalid base64');
     }
 
-    if (!buf?.length) throw new BadRequestException('Empty image buffer');
+    if (!buf?.length) {
+      this.logger.warn('⚠️ Empty image buffer');
+      throw new BadRequestException('Empty image buffer');
+    }
+
     if (buf.length > 8 * 1024 * 1024) {
+      this.logger.warn(
+        `⚠️ Image too large: ${buf.length} bytes (max 8MB allowed)`,
+      );
       throw new BadRequestException('Image too large (max 8MB)');
     }
 
     let msg: any;
+
     try {
+      this.logger.log('📤 Sending photo to Telegram...');
+
       msg = await this.bot.telegram.sendPhoto(
         adminChatId,
         { source: buf },
@@ -59,9 +81,16 @@ export class TournamentBroadcastService {
           caption: `✅ banner uploaded${input.filename ? `: ${input.filename}` : ''}`,
         },
       );
+
+      this.logger.log('✅ Telegram sendPhoto success');
     } catch (e: any) {
       const desc = e?.response?.description || e?.message || String(e);
-      this.logger.error(`sendPhoto failed: ${desc}`);
+
+      this.logger.error('❌ Telegram sendPhoto failed', {
+        description: desc,
+        response: e?.response?.data,
+      });
+
       throw new BadRequestException(`Telegram sendPhoto failed: ${desc}`);
     }
 
@@ -70,10 +99,16 @@ export class TournamentBroadcastService {
     const fileId = best?.file_id;
 
     if (!fileId) {
+      this.logger.error('❌ file_id not found in Telegram response', msg);
       throw new BadRequestException(
         'Could not extract file_id from Telegram response',
       );
     }
+
+    this.logger.log(`🎯 Extracted file_id: ${fileId}`);
+    this.logger.log(
+      `📐 Image info | ${best?.width}x${best?.height} | ${best?.file_size} bytes`,
+    );
 
     return {
       ok: true,
@@ -85,7 +120,6 @@ export class TournamentBroadcastService {
       chatId: msg?.chat?.id,
     };
   }
-
   /**
    * Broadcast photo + text to all users
    */
