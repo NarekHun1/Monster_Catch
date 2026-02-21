@@ -28,23 +28,12 @@ export class TournamentBroadcastController {
   }
 
   /**
-   * ✅ Upload photo WITHOUT multer:
-   * Send base64 in JSON -> returns Telegram file_id
-   *
-   * Body:
-   * {
-   *   "photoBase64": "data:image/png;base64,...." OR "....",
-   *   "filename": "banner.png" (optional)
-   * }
+   * ✅ base64 -> Telegram file_id
    */
   @Post('photo-to-fileid')
   async photoToFileId(
     @Headers('x-broadcast-secret') secret: string,
-    @Body()
-    body: {
-      photoBase64: string;
-      filename?: string;
-    },
+    @Body() body: { photoBase64: string; filename?: string },
   ) {
     this.guard(secret);
 
@@ -58,13 +47,16 @@ export class TournamentBroadcastController {
     });
   }
 
+  /**
+   * ✅ multipart upload -> Telegram file_id
+   * form-data: photo=<file>
+   */
   @Post('upload-banner')
   @UseInterceptors(
     FileInterceptor('photo', {
-      storage: memoryStorage(), // ✅ keep in RAM (easy stream)
-      limits: { fileSize: 8 * 1024 * 1024 }, // 8MB
+      storage: memoryStorage(),
+      limits: { fileSize: 8 * 1024 * 1024 },
       fileFilter: (req, file, cb) => {
-        // ✅ allow only images
         if (!file.mimetype?.startsWith('image/')) {
           return cb(new BadRequestException('Only image files are allowed'), false);
         }
@@ -76,13 +68,9 @@ export class TournamentBroadcastController {
     if (!file) throw new BadRequestException('photo is required');
     return this.service.photoUploadToTelegramFileId(file);
   }
+
   /**
-   * ✅ One-time broadcast to all users:
-   * Body:
-   * {
-   *   "photo": "AgAC...file_id..." OR "https://...jpg",
-   *   "botLink": "https://t.me/monster_catch_bot" (optional)
-   * }
+   * ✅ broadcast to ALL users
    */
   @Post('big-tournament-once')
   async bigTournamentOnce(
@@ -98,6 +86,39 @@ export class TournamentBroadcastController {
     return this.service.broadcastBigTournamentOnce({
       photo: body.photo,
       botLink: body.botLink || 'https://t.me/monster_catch_bot',
+    });
+  }
+
+  /**
+   * ✅ NEW: broadcast only 6 users (or custom userIds)
+   *
+   * Body:
+   * {
+   *   "photo": "AgAC...file_id..." OR "https://...jpg",
+   *   "botLink": "https://t.me/monster_catch_bot",
+   *   "limit": 6,              // optional, default 6
+   *   "userIds": [1, 12, 55]    // optional: send ONLY to these userIds
+   * }
+   */
+  @Post('big-tournament-test')
+  async bigTournamentTest(
+    @Headers('x-broadcast-secret') secret: string,
+    @Body()
+    body: { photo: string; botLink?: string; limit?: number; userIds?: number[] },
+  ) {
+    this.guard(secret);
+
+    if (!body?.photo) {
+      throw new BadRequestException('photo is required (file_id or https url)');
+    }
+
+    const limit = Number.isFinite(body.limit as number) ? Number(body.limit) : 6;
+
+    return this.service.broadcastBigTournamentToNOnce({
+      photo: body.photo,
+      botLink: body.botLink || 'https://t.me/monster_catch_bot',
+      limit,
+      userIds: Array.isArray(body.userIds) && body.userIds.length ? body.userIds : undefined,
     });
   }
 }

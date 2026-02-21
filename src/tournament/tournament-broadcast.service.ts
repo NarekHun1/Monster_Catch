@@ -23,6 +23,10 @@ export class TournamentBroadcastService {
     private readonly prisma: PrismaService,
     @InjectBot() private readonly bot: Telegraf,
   ) {}
+
+  /**
+   * ✅ Upload photo (multipart/form-data) -> send to ADMIN -> return Telegram file_id
+   */
   async photoUploadToTelegramFileId(file: Express.Multer.File) {
     const adminChatId = this.ADMIN_TG_ID;
     if (!Number.isFinite(adminChatId)) {
@@ -34,10 +38,11 @@ export class TournamentBroadcastService {
     );
 
     if (!file.buffer?.length) throw new BadRequestException('Empty upload');
-    if (file.size > 8 * 1024 * 1024) throw new BadRequestException('Image too large (max 8MB)');
-    if (!file.mimetype?.startsWith('image/')) throw new BadRequestException('Invalid file type');
+    if (file.size > 8 * 1024 * 1024)
+      throw new BadRequestException('Image too large (max 8MB)');
+    if (!file.mimetype?.startsWith('image/'))
+      throw new BadRequestException('Invalid file type');
 
-    // ✅ Create a stream from buffer
     const stream = Readable.from(file.buffer);
 
     let msg: any;
@@ -47,8 +52,8 @@ export class TournamentBroadcastService {
       msg = await this.bot.telegram.sendPhoto(
         adminChatId,
         {
-          source: stream, // ✅ stream
-          filename: file.originalname || 'banner.jpg', // ✅ helps Telegram
+          source: stream,
+          filename: file.originalname || 'banner.jpg',
         },
         {
           caption: `✅ banner uploaded: ${file.originalname || 'banner'}`,
@@ -59,7 +64,12 @@ export class TournamentBroadcastService {
     } catch (e: any) {
       const desc = e?.response?.description || e?.message || String(e);
       this.logger.error(`❌ sendPhoto failed: ${desc}`, e?.stack);
-      this.logger.error(`sendPhoto debug: ${JSON.stringify({ code: e?.code, response: e?.response })}`);
+      this.logger.error(
+        `sendPhoto debug: ${JSON.stringify({
+          code: e?.code,
+          response: e?.response,
+        })}`,
+      );
       throw new BadRequestException(`Telegram sendPhoto failed: ${desc}`);
     }
 
@@ -68,8 +78,13 @@ export class TournamentBroadcastService {
     const fileId = best?.file_id;
 
     if (!fileId) {
-      this.logger.error('❌ file_id not found in Telegram response', JSON.stringify(msg));
-      throw new BadRequestException('Could not extract file_id from Telegram response');
+      this.logger.error(
+        '❌ file_id not found in Telegram response',
+        JSON.stringify(msg),
+      );
+      throw new BadRequestException(
+        'Could not extract file_id from Telegram response',
+      );
     }
 
     this.logger.log(`🎯 Extracted file_id: ${fileId}`);
@@ -84,8 +99,9 @@ export class TournamentBroadcastService {
       chatId: msg?.chat?.id,
     };
   }
+
   /**
-   * Convert base64 -> Buffer -> send to ADMIN_TG_ID -> return Telegram file_id
+   * ✅ Convert base64 -> Buffer -> send to ADMIN -> return Telegram file_id
    */
   async photoBase64ToTelegramFileId(input: {
     photoBase64: string;
@@ -134,7 +150,6 @@ export class TournamentBroadcastService {
 
     try {
       this.logger.log('📤 Sending photo to Telegram...');
-
       msg = await this.bot.telegram.sendPhoto(
         adminChatId,
         { source: buf },
@@ -145,22 +160,19 @@ export class TournamentBroadcastService {
 
       this.logger.log('✅ Telegram sendPhoto success');
     } catch (e: any) {
-      // ✅ Basic identity
       this.logger.error(
         `❌ Telegram sendPhoto failed: ${e?.message || e?.description || String(e)}`,
         e?.stack,
       );
 
-      // ✅ Useful structured debug (works even when response is undefined)
       const debug = {
         name: e?.name,
         message: e?.message,
         code: e?.code,
         status: e?.status,
         description: e?.response?.description ?? e?.description,
-        response: e?.response, // some libs
-        responseData: e?.response?.data, // axios-style
-        on: e?.on, // Telegraf sometimes uses this
+        response: e?.response,
+        responseData: e?.response?.data,
         method: e?.method,
         cause: e?.cause
           ? {
@@ -175,7 +187,6 @@ export class TournamentBroadcastService {
 
       const desc =
         e?.response?.description || e?.description || e?.message || String(e);
-
       throw new BadRequestException(`Telegram sendPhoto failed: ${desc}`);
     }
 
@@ -205,8 +216,47 @@ export class TournamentBroadcastService {
       chatId: msg?.chat?.id,
     };
   }
+
   /**
-   * Broadcast photo + text to all users
+   * ✅ Internal helper: send photo+caption to a chat with retry/blocked handling
+   */
+  private async safeSendPhoto(
+    chatId: number,
+    photo: string,
+    caption: string,
+    botLink: string,
+  ) {
+    try {
+      await this.bot.telegram.sendPhoto(chatId, photo, {
+        caption,
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [[{ text: '🔥 Играть сейчас', url: botLink }]],
+        },
+      });
+
+      return { ok: true as const };
+    } catch (e: any) {
+      const desc = e?.response?.description || e?.message || String(e);
+
+      const isBlocked =
+        String(desc).includes('bot was blocked') ||
+        String(desc).includes('chat not found') ||
+        String(desc).includes('user is deactivated');
+
+      const retryAfter = e?.response?.parameters?.retry_after;
+
+      return {
+        ok: false as const,
+        desc,
+        isBlocked,
+        retryAfter: typeof retryAfter === 'number' ? retryAfter : undefined,
+      };
+    }
+  }
+
+  /**
+   * ✅ Broadcast photo + text to all users (one-time)
    */
   async broadcastBigTournamentOnce(params: {
     photo: string; // file_id OR https url
@@ -257,17 +307,21 @@ export class TournamentBroadcastService {
         });
 
         sent++;
-        await sleep(90);
+
+        // ✅ безопасная задержка (чтобы не ловить 429)
+        await sleep(120);
       } catch (e: any) {
         failed++;
 
         const desc = e?.response?.description || e?.message || String(e);
 
-        if (
+        // ✅ если user blocked / chat invalid — помечаем
+        const isBlocked =
           String(desc).includes('bot was blocked') ||
           String(desc).includes('chat not found') ||
-          String(desc).includes('user is deactivated')
-        ) {
+          String(desc).includes('user is deactivated');
+
+        if (isBlocked) {
           blocked++;
           try {
             await this.prisma.user.update({
@@ -277,11 +331,13 @@ export class TournamentBroadcastService {
           } catch {}
         }
 
+        // ✅ rate limit (429)
         const retryAfter = e?.response?.parameters?.retry_after;
         if (typeof retryAfter === 'number') {
+          this.logger.warn(`⏳ 429 retry_after=${retryAfter}s`);
           await sleep((retryAfter + 1) * 1000);
         } else {
-          await sleep(150);
+          await sleep(250);
         }
 
         this.logger.warn(`Broadcast failed to ${u.telegramId}: ${desc}`);
@@ -289,5 +345,97 @@ export class TournamentBroadcastService {
     }
 
     return { total: users.length, sent, failed, blocked };
+  }
+  /**
+   * ✅ NEW: broadcast only N users one-time (for testing)
+   * - if userIds provided: sends only to those users
+   * - else: takes first N users by id asc
+   */
+  async broadcastBigTournamentToNOnce(params: {
+    photo: string;
+    botLink: string;
+    limit: number; // e.g. 6
+    userIds?: number[];
+  }) {
+    const caption = [
+      '🏆 <b>Большой турнир уже в игре!</b>',
+      '',
+      '💰 Приз: <b>10 000 COIN</b> ~100$',
+      '',
+      '🔥 Чем больше очков — тем ближе победа.',
+      '',
+      '⏳ Успей принять участие до <b>1 марта</b>',
+      '',
+      '⚔️ Заходи в игру и докажи, что ты лучший охотник.',
+      '',
+      `👉 ${params.botLink}`,
+    ].join('\n');
+
+    const where: any = { telegramId: { not: '' }, isBlocked: false };
+
+    if (params.userIds?.length) {
+      where.id = { in: params.userIds };
+    }
+
+    const users = await this.prisma.user.findMany({
+      where,
+      select: { id: true, telegramId: true },
+      orderBy: { id: 'asc' },
+      take: params.userIds?.length ? undefined : Math.max(1, params.limit),
+    });
+
+    if (!users.length) {
+      return { total: 0, sent: 0, failed: 0, blocked: 0, ids: [] as number[] };
+    }
+
+    let sent = 0;
+    let failed = 0;
+    let blocked = 0;
+
+    const ids: number[] = [];
+
+    for (const u of users) {
+      ids.push(u.id);
+
+      const chatId = Number(u.telegramId);
+      if (!Number.isFinite(chatId)) continue;
+
+      const res = await this.safeSendPhoto(
+        chatId,
+        params.photo,
+        caption,
+        params.botLink,
+      );
+
+      if (res.ok) {
+        sent++;
+        await sleep(120); // чуть медленнее, чтоб не ловить 429
+        continue;
+      }
+
+      failed++;
+
+      if (res.isBlocked) {
+        blocked++;
+        try {
+          await this.prisma.user.update({
+            where: { id: u.id },
+            data: { isBlocked: true },
+          });
+        } catch {}
+      }
+
+      if (typeof res.retryAfter === 'number') {
+        await sleep((res.retryAfter + 1) * 1000);
+      } else {
+        await sleep(250);
+      }
+
+      this.logger.warn(
+        `Broadcast(ONLY-${params.limit}) failed to ${u.telegramId}: ${res.desc}`,
+      );
+    }
+
+    return { total: users.length, sent, failed, blocked, ids };
   }
 }
