@@ -77,8 +77,12 @@ model Referral {
 }
 
 model Tournament {
-  id           Int                     @id @default(autoincrement())
-  type         TournamentType          @default(HOURLY)
+  id   Int            @id @default(autoincrement())
+  type TournamentType @default(HOURLY)
+
+  slug      String? @unique
+  rulesJson Json?
+
   startsAt     DateTime
   endsAt       DateTime
   joinDeadline DateTime

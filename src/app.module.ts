@@ -18,6 +18,7 @@ import { RouletteModule } from './roulette/roulette.module';
 import { QuestsModule } from './quests/quests.module';
 import { MonstersModule } from './monsters/monsters.module';
 import { MarketModule } from './market/market.module';
+import { EventTournamentModule } from './event-tournamen/event-tournament.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { MarketModule } from './market/market.module';
     QuestsModule,
     MonstersModule,
     MarketModule,
+    EventTournamentModule,
   ],
 })
 export class AppModule {}
