@@ -89,6 +89,7 @@ export class TournamentBroadcastService {
       this.logger.error('❌ Telegram sendPhoto failed', {
         description: desc,
         response: e?.response?.data,
+        error: e,
       });
 
       throw new BadRequestException(`Telegram sendPhoto failed: ${desc}`);
