@@ -1,10 +1,21 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { InjectBot } from 'nestjs-telegraf';
 import { Telegraf } from 'telegraf';
 import { ConfigService } from '@nestjs/config';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function stripDataUrl(base64: string) {
+  // supports "data:image/png;base64,...."
+  const m = base64.match(/^data:([^;]+);base64,(.*)$/);
+  if (m) return { mime: m[1], b64: m[2] };
+  return { mime: undefined as string | undefined, b64: base64 };
+}
 
 @Injectable()
 export class TournamentBroadcastService {
@@ -17,58 +28,75 @@ export class TournamentBroadcastService {
   ) {}
 
   /**
-   * 1) Upload photo via Insomnia (multipart/form-data)
-   * 2) We send it to ADMIN_TG_ID to get Telegram file_id
-   * 3) Return file_id -> use it in broadcast
+   * Convert base64 -> Buffer -> send to ADMIN_TG_ID -> return Telegram file_id
    */
-  async uploadPhotoAndGetFileId(file: Express.Multer.File) {
-    if (!file) throw new BadRequestException('photo is required');
-
+  async photoBase64ToTelegramFileId(input: {
+    photoBase64: string;
+    filename?: string;
+  }) {
     const adminIdStr = this.config.get<string>('ADMIN_TG_ID');
-    if (!adminIdStr) {
-      throw new BadRequestException('ADMIN_TG_ID is not set in env');
-    }
+    if (!adminIdStr) throw new BadRequestException('ADMIN_TG_ID is not set');
 
     const adminChatId = Number(adminIdStr);
     if (!Number.isFinite(adminChatId)) {
       throw new BadRequestException('ADMIN_TG_ID must be a number');
     }
 
-    // Send to admin to make Telegram store it, return file_id
-    const msg = await this.bot.telegram.sendPhoto(
-      adminChatId,
-      { source: file.buffer }, // ✅ buffer from multer memory storage
-      {
-        caption: `✅ Uploaded banner: ${file.originalname}`,
-      },
-    );
+    const { b64 } = stripDataUrl(input.photoBase64);
 
-    const best = msg.photo?.[msg.photo.length - 1];
+    let buf: Buffer;
+    try {
+      buf = Buffer.from(b64, 'base64');
+    } catch {
+      throw new BadRequestException('Invalid base64');
+    }
+
+    // safety: base64 JSON can be heavy, keep < 8MB
+    if (!buf?.length) throw new BadRequestException('Empty image buffer');
+    if (buf.length > 8 * 1024 * 1024) {
+      throw new BadRequestException('Image too large (max 8MB)');
+    }
+
+    let msg: any;
+    try {
+      msg = await this.bot.telegram.sendPhoto(
+        adminChatId,
+        { source: buf },
+        { caption: `✅ banner uploaded${input.filename ? `: ${input.filename}` : ''}` },
+      );
+    } catch (e: any) {
+      const desc = e?.response?.description || e?.message || String(e);
+      this.logger.error(`sendPhoto failed: ${desc}`);
+      throw new BadRequestException(`Telegram sendPhoto failed: ${desc}`);
+    }
+
+    const photos: any[] = msg?.photo || [];
+    const best = photos[photos.length - 1];
     const fileId = best?.file_id;
 
     if (!fileId) {
-      throw new BadRequestException(
-        'Failed to extract file_id from Telegram response',
-      );
+      throw new BadRequestException('Could not extract file_id from Telegram response');
     }
 
     return {
+      ok: true,
       fileId,
-      width: best.width,
-      height: best.height,
-      fileSize: best.file_size,
+      width: best?.width,
+      height: best?.height,
+      fileSize: best?.file_size,
+      messageId: msg?.message_id,
+      chatId: msg?.chat?.id,
     };
   }
 
   /**
-   * One-time broadcast (photo + caption)
-   * Use file_id (best) OR public url.
+   * Broadcast photo + text to all users (anti-limit + block handling)
    */
   async broadcastBigTournamentOnce(params: {
     photo: string; // file_id OR https url
-    botLink: string; // https://t.me/monster_catch_bot
+    botLink: string;
   }) {
-    const text = [
+    const caption = [
       '🏆 <b>Большой турнир уже в игре!</b>',
       '',
       '💰 Приз: <b>10 000 COIN</b> ~100$',
@@ -78,6 +106,8 @@ export class TournamentBroadcastService {
       '⏳ Успей принять участие до <b>1 марта</b>',
       '',
       '⚔️ Заходи в игру и докажи, что ты лучший охотник.',
+      '',
+      `👉 ${params.botLink}`,
     ].join('\n');
 
     const users = await this.prisma.user.findMany({
@@ -85,16 +115,11 @@ export class TournamentBroadcastService {
         telegramId: { not: '' },
         isBlocked: false,
       },
-      select: {
-        id: true,
-        telegramId: true,
-      },
+      select: { id: true, telegramId: true },
       orderBy: { id: 'asc' },
     });
 
-    if (!users.length) {
-      return { total: 0, sent: 0, failed: 0, blocked: 0 };
-    }
+    if (!users.length) return { total: 0, sent: 0, failed: 0, blocked: 0 };
 
     let sent = 0;
     let failed = 0;
@@ -106,28 +131,26 @@ export class TournamentBroadcastService {
 
       try {
         await this.bot.telegram.sendPhoto(chatId, params.photo, {
-          caption: text + `\n\n👉 ${params.botLink}`,
+          caption,
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [
-                {
-                  text: '🔥 Играть сейчас',
-                  url: params.botLink,
-                },
-              ],
+              [{ text: '🔥 Играть сейчас', url: params.botLink }],
             ],
           },
         });
 
         sent++;
-        await sleep(90); // ✅ анти-лимит (~11 msg/sec)
+        await sleep(90); // ✅ safe speed
       } catch (e: any) {
         failed++;
 
-        const desc = e?.response?.description || e?.message || String(e);
+        const desc =
+          e?.response?.description ||
+          e?.message ||
+          String(e);
 
-        // ✅ если бот заблокирован / чат недоступен — пометим user.isBlocked=true
+        // mark blocked
         if (
           String(desc).includes('bot was blocked') ||
           String(desc).includes('chat not found') ||
@@ -142,86 +165,18 @@ export class TournamentBroadcastService {
           } catch {}
         }
 
-        // ✅ если 429, Telegram иногда отдаёт retry_after
+        // 429 retry
         const retryAfter = e?.response?.parameters?.retry_after;
         if (typeof retryAfter === 'number') {
-          this.logger.warn(`429 retry_after=${retryAfter}s`);
           await sleep((retryAfter + 1) * 1000);
         } else {
           await sleep(150);
         }
 
-        this.logger.warn(`Failed broadcast to ${u.telegramId}: ${desc}`);
+        this.logger.warn(`Broadcast failed to ${u.telegramId}: ${desc}`);
       }
     }
 
     return { total: users.length, sent, failed, blocked };
   }
 }
-// ⏱ каждый час, в начале часа — ТОЛЬКО HOURLY
-//   @Cron('0 * * * *')
-//   async broadcastNewHourTournament() {
-//     const now = new Date();
-//     this.logger.log(
-//       `Checking HOURLY tournament for broadcast at ${now.toISOString()}`,
-//     );
-//
-//     // ✅ ПРАВИЛЬНО
-//     const tournament = await this.tournamentService.getOrCreateTournament(
-//       TournamentType.HOURLY,
-//     );
-//
-//     // если турнир уже закончился — не спамим
-//     if (tournament.status === 'FINISHED') return;
-//
-//     // если окно входа закрыто — не спамим
-//     if (now > tournament.joinDeadline) {
-//       this.logger.log('Join window already closed, skip broadcast');
-//       return;
-//     }
-//
-//     // активные пользователи
-//     const users = await this.prisma.user.findMany({
-//       where: {
-//         coins: { gt: 0 },
-//         telegramId: { not: '' },
-//       },
-//       select: {
-//         telegramId: true,
-//         username: true,
-//         coins: true,
-//       },
-//     });
-//
-//     if (!users.length) {
-//       this.logger.log('No users to notify');
-//       return;
-//     }
-//
-//     const text = [
-//       '🏆 Почасовой турнир стартовал!',
-//       '',
-//       '🎟 Вход: 50 монет',
-//       '💰 Призовой фонд растёт с каждым участником',
-//       '',
-//       '⏳ У тебя есть ~10 минут, чтобы вступить:',
-//       'Открой игру → вкладка «Турниры» → «Вступить».',
-//       '',
-//       '⚔️ Докажи, что ты лучший охотник на монстров!',
-//     ].join('\n');
-//
-//     for (const u of users) {
-//       try {
-//         await this.bot.telegram.sendMessage(Number(u.telegramId), text);
-//       } catch (e: any) {
-//         this.logger.warn(
-//           `Failed to send tournament msg to ${u.telegramId}: ${e.message}`,
-//         );
-//       }
-//     }
-//
-//     this.logger.log(
-//       `HOURLY tournament broadcast sent to ${users.length} users`,
-//     );
-//   }
-// }

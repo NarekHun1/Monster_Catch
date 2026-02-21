@@ -4,10 +4,8 @@ import {
   Headers,
   Post,
   UnauthorizedException,
-  UseInterceptors,
-  UploadedFile,
+  BadRequestException,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import { TournamentBroadcastService } from './tournament-broadcast.service';
 
@@ -26,22 +24,43 @@ export class TournamentBroadcastController {
   }
 
   /**
-   * Upload banner photo via Insomnia -> returns fileId
-   * multipart/form-data: photo=file
+   * ✅ Upload photo WITHOUT multer:
+   * Send base64 in JSON -> returns Telegram file_id
+   *
+   * Body:
+   * {
+   *   "photoBase64": "data:image/png;base64,...." OR "....",
+   *   "filename": "banner.png" (optional)
+   * }
    */
-  @Post('upload-photo')
-  @UseInterceptors(FileInterceptor('photo'))
-  async uploadPhoto(
+  @Post('photo-to-fileid')
+  async photoToFileId(
     @Headers('x-broadcast-secret') secret: string,
-    @UploadedFile() file: Express.Multer.File,
+    @Body()
+    body: {
+      photoBase64: string;
+      filename?: string;
+    },
   ) {
     this.guard(secret);
-    return this.service.uploadPhotoAndGetFileId(file);
+
+    if (!body?.photoBase64) {
+      throw new BadRequestException('photoBase64 is required');
+    }
+
+    return this.service.photoBase64ToTelegramFileId({
+      photoBase64: body.photoBase64,
+      filename: body.filename,
+    });
   }
 
   /**
-   * Run one-time broadcast with photo+text
-   * Body: { photo: "file_id or url", botLink: "https://t.me/monster_catch_bot" }
+   * ✅ One-time broadcast to all users:
+   * Body:
+   * {
+   *   "photo": "AgAC...file_id..." OR "https://...jpg",
+   *   "botLink": "https://t.me/monster_catch_bot" (optional)
+   * }
    */
   @Post('big-tournament-once')
   async bigTournamentOnce(
@@ -50,10 +69,13 @@ export class TournamentBroadcastController {
   ) {
     this.guard(secret);
 
-    const botLink = body.botLink || 'https://t.me/monster_catch_bot';
+    if (!body?.photo) {
+      throw new BadRequestException('photo is required (file_id or https url)');
+    }
+
     return this.service.broadcastBigTournamentOnce({
       photo: body.photo,
-      botLink,
+      botLink: body.botLink || 'https://t.me/monster_catch_bot',
     });
   }
 }
