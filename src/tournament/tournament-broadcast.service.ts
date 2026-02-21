@@ -34,7 +34,7 @@ export class TournamentBroadcastService {
     photoBase64: string;
     filename?: string;
   }) {
-    const adminIdStr = this.config.get<string>('ADMIN_TG_ID');
+    const adminIdStr = this.config.get<string>('934669069');
     if (!adminIdStr) throw new BadRequestException('ADMIN_TG_ID is not set');
 
     const adminChatId = Number(adminIdStr);
