@@ -46,11 +46,7 @@ export class TournamentBroadcastController {
       filename: body.filename,
     });
   }
-  @Post('debug-last-photo')
-  async debugLastPhoto(@Headers('x-broadcast-secret') secret: string) {
-    this.guard(secret);
-    return this.service.debugGetLastPhotoFileId();
-  }
+
   /**
    * ✅ multipart upload -> Telegram file_id
    * form-data: photo=<file>
@@ -62,16 +58,13 @@ export class TournamentBroadcastController {
       limits: { fileSize: 8 * 1024 * 1024 },
       fileFilter: (req, file, cb) => {
         if (!file.mimetype?.startsWith('image/')) {
-          return cb(
-            new BadRequestException('Only image files are allowed'),
-            false,
-          );
+          return cb(new BadRequestException('Only image files are allowed'), false);
         }
         cb(null, true);
       },
     }),
   )
-  async uploadBanner(@UploadedFile() file?: Express.Multer.File) {
+  async uploadBanner(@UploadedFile() file?: any) {
     if (!file) throw new BadRequestException('photo is required');
     return this.service.photoUploadToTelegramFileId(file);
   }
@@ -97,15 +90,7 @@ export class TournamentBroadcastController {
   }
 
   /**
-   * ✅ NEW: broadcast only 6 users (or custom userIds)
-   *
-   * Body:
-   * {
-   *   "photo": "AgAC...file_id..." OR "https://...jpg",
-   *   "botLink": "https://t.me/monster_catch_bot",
-   *   "limit": 6,              // optional, default 6
-   *   "userIds": [1, 12, 55]    // optional: send ONLY to these userIds
-   * }
+   * ✅ broadcast only N users (test)
    */
   @Post('big-tournament-test')
   async bigTournamentTest(
@@ -124,18 +109,14 @@ export class TournamentBroadcastController {
       throw new BadRequestException('photo is required (file_id or https url)');
     }
 
-    const limit = Number.isFinite(body.limit as number)
-      ? Number(body.limit)
-      : 6;
+    const limit = Number.isFinite(body.limit as number) ? Number(body.limit) : 6;
 
     return this.service.broadcastBigTournamentToNOnce({
       photo: body.photo,
       botLink: body.botLink || 'https://t.me/monster_catch_bot',
       limit,
       userIds:
-        Array.isArray(body.userIds) && body.userIds.length
-          ? body.userIds
-          : undefined,
+        Array.isArray(body.userIds) && body.userIds.length ? body.userIds : undefined,
     });
   }
 }
