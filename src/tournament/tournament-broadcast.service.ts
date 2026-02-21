@@ -1,17 +1,11 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { InjectBot } from 'nestjs-telegraf';
 import { Telegraf } from 'telegraf';
-import { ConfigService } from '@nestjs/config';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function stripDataUrl(base64: string) {
-  // supports "data:image/png;base64,...."
   const m = base64.match(/^data:([^;]+);base64,(.*)$/);
   if (m) return { mime: m[1], b64: m[2] };
   return { mime: undefined as string | undefined, b64: base64 };
@@ -21,9 +15,11 @@ function stripDataUrl(base64: string) {
 export class TournamentBroadcastService {
   private readonly logger = new Logger(TournamentBroadcastService.name);
 
+  // ✅ ТВОЙ ADMIN TG ID (хардкод)
+  private readonly ADMIN_TG_ID = 934669069;
+
   constructor(
     private readonly prisma: PrismaService,
-    private readonly config: ConfigService,
     @InjectBot() private readonly bot: Telegraf,
   ) {}
 
@@ -34,10 +30,7 @@ export class TournamentBroadcastService {
     photoBase64: string;
     filename?: string;
   }) {
-    const adminIdStr = this.config.get<string>('934669069');
-    if (!adminIdStr) throw new BadRequestException('ADMIN_TG_ID is not set');
-
-    const adminChatId = Number(adminIdStr);
+    const adminChatId = this.ADMIN_TG_ID;
     if (!Number.isFinite(adminChatId)) {
       throw new BadRequestException('ADMIN_TG_ID must be a number');
     }
@@ -51,7 +44,6 @@ export class TournamentBroadcastService {
       throw new BadRequestException('Invalid base64');
     }
 
-    // safety: base64 JSON can be heavy, keep < 8MB
     if (!buf?.length) throw new BadRequestException('Empty image buffer');
     if (buf.length > 8 * 1024 * 1024) {
       throw new BadRequestException('Image too large (max 8MB)');
@@ -62,7 +54,9 @@ export class TournamentBroadcastService {
       msg = await this.bot.telegram.sendPhoto(
         adminChatId,
         { source: buf },
-        { caption: `✅ banner uploaded${input.filename ? `: ${input.filename}` : ''}` },
+        {
+          caption: `✅ banner uploaded${input.filename ? `: ${input.filename}` : ''}`,
+        },
       );
     } catch (e: any) {
       const desc = e?.response?.description || e?.message || String(e);
@@ -75,7 +69,9 @@ export class TournamentBroadcastService {
     const fileId = best?.file_id;
 
     if (!fileId) {
-      throw new BadRequestException('Could not extract file_id from Telegram response');
+      throw new BadRequestException(
+        'Could not extract file_id from Telegram response',
+      );
     }
 
     return {
@@ -90,7 +86,7 @@ export class TournamentBroadcastService {
   }
 
   /**
-   * Broadcast photo + text to all users (anti-limit + block handling)
+   * Broadcast photo + text to all users
    */
   async broadcastBigTournamentOnce(params: {
     photo: string; // file_id OR https url
@@ -141,16 +137,12 @@ export class TournamentBroadcastService {
         });
 
         sent++;
-        await sleep(90); // ✅ safe speed
+        await sleep(90);
       } catch (e: any) {
         failed++;
 
-        const desc =
-          e?.response?.description ||
-          e?.message ||
-          String(e);
+        const desc = e?.response?.description || e?.message || String(e);
 
-        // mark blocked
         if (
           String(desc).includes('bot was blocked') ||
           String(desc).includes('chat not found') ||
@@ -165,7 +157,6 @@ export class TournamentBroadcastService {
           } catch {}
         }
 
-        // 429 retry
         const retryAfter = e?.response?.parameters?.retry_after;
         if (typeof retryAfter === 'number') {
           await sleep((retryAfter + 1) * 1000);
