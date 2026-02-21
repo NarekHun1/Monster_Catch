@@ -5,9 +5,13 @@ import {
   Post,
   UnauthorizedException,
   BadRequestException,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TournamentBroadcastService } from './tournament-broadcast.service';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 
 @Controller('admin/broadcast')
 export class TournamentBroadcastController {
@@ -54,6 +58,24 @@ export class TournamentBroadcastController {
     });
   }
 
+  @Post('upload-banner')
+  @UseInterceptors(
+    FileInterceptor('photo', {
+      storage: memoryStorage(), // ✅ keep in RAM (easy stream)
+      limits: { fileSize: 8 * 1024 * 1024 }, // 8MB
+      fileFilter: (req, file, cb) => {
+        // ✅ allow only images
+        if (!file.mimetype?.startsWith('image/')) {
+          return cb(new BadRequestException('Only image files are allowed'), false);
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  async uploadBanner(@UploadedFile() file?: Express.Multer.File) {
+    if (!file) throw new BadRequestException('photo is required');
+    return this.service.photoUploadToTelegramFileId(file);
+  }
   /**
    * ✅ One-time broadcast to all users:
    * Body:

@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { InjectBot } from 'nestjs-telegraf';
 import { Telegraf } from 'telegraf';
+import { Readable } from 'node:stream';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -22,7 +23,67 @@ export class TournamentBroadcastService {
     private readonly prisma: PrismaService,
     @InjectBot() private readonly bot: Telegraf,
   ) {}
+  async photoUploadToTelegramFileId(file: Express.Multer.File) {
+    const adminChatId = this.ADMIN_TG_ID;
+    if (!Number.isFinite(adminChatId)) {
+      throw new BadRequestException('ADMIN_TG_ID must be a number');
+    }
 
+    this.logger.log(
+      `📥 Upload received | name=${file.originalname} | mime=${file.mimetype} | size=${file.size}`,
+    );
+
+    if (!file.buffer?.length) throw new BadRequestException('Empty upload');
+    if (file.size > 8 * 1024 * 1024) throw new BadRequestException('Image too large (max 8MB)');
+    if (!file.mimetype?.startsWith('image/')) throw new BadRequestException('Invalid file type');
+
+    // ✅ Create a stream from buffer
+    const stream = Readable.from(file.buffer);
+
+    let msg: any;
+    try {
+      this.logger.log('📤 Sending photo to Telegram (stream)...');
+
+      msg = await this.bot.telegram.sendPhoto(
+        adminChatId,
+        {
+          source: stream, // ✅ stream
+          filename: file.originalname || 'banner.jpg', // ✅ helps Telegram
+        },
+        {
+          caption: `✅ banner uploaded: ${file.originalname || 'banner'}`,
+        },
+      );
+
+      this.logger.log('✅ Telegram sendPhoto success');
+    } catch (e: any) {
+      const desc = e?.response?.description || e?.message || String(e);
+      this.logger.error(`❌ sendPhoto failed: ${desc}`, e?.stack);
+      this.logger.error(`sendPhoto debug: ${JSON.stringify({ code: e?.code, response: e?.response })}`);
+      throw new BadRequestException(`Telegram sendPhoto failed: ${desc}`);
+    }
+
+    const photos: any[] = msg?.photo || [];
+    const best = photos[photos.length - 1];
+    const fileId = best?.file_id;
+
+    if (!fileId) {
+      this.logger.error('❌ file_id not found in Telegram response', JSON.stringify(msg));
+      throw new BadRequestException('Could not extract file_id from Telegram response');
+    }
+
+    this.logger.log(`🎯 Extracted file_id: ${fileId}`);
+
+    return {
+      ok: true,
+      fileId,
+      width: best?.width,
+      height: best?.height,
+      fileSize: best?.file_size,
+      messageId: msg?.message_id,
+      chatId: msg?.chat?.id,
+    };
+  }
   /**
    * Convert base64 -> Buffer -> send to ADMIN_TG_ID -> return Telegram file_id
    */
