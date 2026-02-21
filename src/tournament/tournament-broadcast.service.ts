@@ -309,10 +309,7 @@ export class TournamentBroadcastService implements OnModuleInit {
   /**
    * ✅ Broadcast photo + text to all users (one-time)
    */
-  async broadcastBigTournamentOnce(params: {
-    photo: string; // file_id OR https url
-    botLink: string;
-  }) {
+  async broadcastBigTournamentOnce(params: { photo: string; botLink: string }) {
     const caption = [
       '🏆 <b>Большой турнир уже в игре!</b>',
       '',
@@ -328,146 +325,104 @@ export class TournamentBroadcastService implements OnModuleInit {
     ].join('\n');
 
     const users = await this.prisma.user.findMany({
-      where: {
-        telegramId: { not: '' },
-        isBlocked: false,
-      },
+      where: { telegramId: { not: '' }, isBlocked: false },
       select: { id: true, telegramId: true },
       orderBy: { id: 'asc' },
-    });
-
-    if (!users.length) return { total: 0, sent: 0, failed: 0, blocked: 0 };
-
-    let sent = 0;
-    let failed = 0;
-    let blocked = 0;
-
-    for (const u of users) {
-      const chatId = Number(u.telegramId);
-      if (!Number.isFinite(chatId)) continue;
-
-      const res = await this.safeSendPhoto(
-        chatId,
-        params.photo,
-        caption,
-        params.botLink,
-      );
-
-      if (res.ok) {
-        sent++;
-        await sleep(120);
-        continue;
-      }
-
-      failed++;
-
-      if (res.isBlocked) {
-        blocked++;
-        try {
-          await this.prisma.user.update({
-            where: { id: u.id },
-            data: { isBlocked: true },
-          });
-        } catch {}
-      }
-
-      if (typeof res.retryAfter === 'number') {
-        this.logger.warn(`⏳ 429 retry_after=${res.retryAfter}s`);
-        await sleep((res.retryAfter + 1) * 1000);
-      } else {
-        await sleep(250);
-      }
-
-      this.logger.warn(`Broadcast failed to ${u.telegramId}: ${res.desc}`);
-    }
-
-    return { total: users.length, sent, failed, blocked };
-  }
-
-  /**
-   * ✅ Broadcast only N users (test)
-   */
-  async broadcastBigTournamentToNOnce(params: {
-    photo: string;
-    botLink: string;
-    limit: number; // e.g. 6
-    userIds?: number[];
-  }) {
-    const caption = [
-      '🏆 <b>Большой турнир уже в игре!</b>',
-      '',
-      '💰 Приз: <b>10 000 COIN</b> ~100$',
-      '',
-      '🔥 Чем больше очков — тем ближе победа.',
-      '',
-      '⏳ Успей принять участие до <b>1 марта</b>',
-      '',
-      '⚔️ Заходи в игру и докажи, что ты лучший охотник.',
-      '',
-      `👉 ${params.botLink}`,
-    ].join('\n');
-
-    const where: any = { telegramId: { not: '' }, isBlocked: false };
-    if (params.userIds?.length) where.id = { in: params.userIds };
-
-    const users = await this.prisma.user.findMany({
-      where,
-      select: { id: true, telegramId: true },
-      orderBy: { id: 'asc' },
-      take: params.userIds?.length ? undefined : Math.max(1, params.limit),
     });
 
     if (!users.length) {
-      return { total: 0, sent: 0, failed: 0, blocked: 0, ids: [] as number[] };
+      return {
+        total: 0,
+        sent: 0,
+        failed: 0,
+        blocked: 0,
+        blockedIds: [] as number[],
+        blockedTelegramIds: [] as string[],
+        failSamples: [] as {
+          userId: number;
+          telegramId: string;
+          desc: string;
+        }[],
+        aliveEstimate: 0,
+      };
     }
 
     let sent = 0;
     let failed = 0;
     let blocked = 0;
-    const ids: number[] = [];
+
+    const blockedIds: number[] = [];
+    const blockedTelegramIds: string[] = [];
+
+    // ✅ чтобы ответ не был огромным — храним только первые 30 ошибок
+    const failSamples: { userId: number; telegramId: string; desc: string }[] =
+      [];
 
     for (const u of users) {
-      ids.push(u.id);
-
       const chatId = Number(u.telegramId);
       if (!Number.isFinite(chatId)) continue;
 
-      const res = await this.safeSendPhoto(
-        chatId,
-        params.photo,
-        caption,
-        params.botLink,
-      );
+      try {
+        await this.bot.telegram.sendPhoto(chatId, params.photo, {
+          caption,
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔥 Играть сейчас', url: params.botLink }],
+            ],
+          },
+        });
 
-      if (res.ok) {
         sent++;
         await sleep(120);
-        continue;
+      } catch (e: any) {
+        failed++;
+
+        const desc = e?.response?.description || e?.message || String(e);
+
+        const isBlocked =
+          String(desc).includes('bot was blocked') ||
+          String(desc).includes('Forbidden: bot was blocked by the user') ||
+          String(desc).includes('chat not found') ||
+          String(desc).includes('user is deactivated');
+
+        if (isBlocked) {
+          blocked++;
+          blockedIds.push(u.id);
+          blockedTelegramIds.push(u.telegramId);
+
+          try {
+            await this.prisma.user.update({
+              where: { id: u.id },
+              data: { isBlocked: true },
+            });
+          } catch {}
+        } else {
+          if (failSamples.length < 30) {
+            failSamples.push({ userId: u.id, telegramId: u.telegramId, desc });
+          }
+        }
+
+        const retryAfter = e?.response?.parameters?.retry_after;
+        if (typeof retryAfter === 'number') {
+          await sleep((retryAfter + 1) * 1000);
+        } else {
+          await sleep(250);
+        }
+
+        this.logger.warn(`Broadcast failed to ${u.telegramId}: ${desc}`);
       }
-
-      failed++;
-
-      if (res.isBlocked) {
-        blocked++;
-        try {
-          await this.prisma.user.update({
-            where: { id: u.id },
-            data: { isBlocked: true },
-          });
-        } catch {}
-      }
-
-      if (typeof res.retryAfter === 'number') {
-        await sleep((res.retryAfter + 1) * 1000);
-      } else {
-        await sleep(250);
-      }
-
-      this.logger.warn(
-        `Broadcast(ONLY-${params.limit}) failed to ${u.telegramId}: ${res.desc}`,
-      );
     }
 
-    return { total: users.length, sent, failed, blocked, ids };
+    return {
+      total: users.length,
+      sent,
+      failed,
+      blocked,
+      blockedIds,
+      blockedTelegramIds,
+      failSamples,
+      aliveEstimate: users.length - blocked,
+    };
   }
 }
