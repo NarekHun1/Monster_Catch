@@ -22,12 +22,13 @@ export class GameService {
     private readonly notificationService: NotificationService,
   ) {}
 
+  // ⚠️ Оставляем ТОЛЬКО для ручного админского бана (не для античита)
   private async blockUser(userId: number, reason: string) {
     await this.prisma.user.update({
       where: { id: userId },
       data: { isBlocked: true },
     });
-    console.log('🚨 USER BLOCKED:', { userId, reason });
+    console.log('🚨 USER BLOCKED (manual/admin):', { userId, reason });
   }
 
   /** Достаём userId из JWT-токена */
@@ -35,11 +36,13 @@ export class GameService {
     if (!token) throw new UnauthorizedException('Token is missing');
 
     const secret = this.config.get<string>('JWT_SECRET');
-    if (!secret) throw new UnauthorizedException('JWT_SECRET is not configured');
+    if (!secret)
+      throw new UnauthorizedException('JWT_SECRET is not configured');
 
     try {
       const payload = jwt.verify(token, secret) as JwtPayload;
-      if (!payload.userId) throw new UnauthorizedException('Token payload has no userId');
+      if (!payload.userId)
+        throw new UnauthorizedException('Token payload has no userId');
       return payload.userId;
     } catch {
       throw new UnauthorizedException('Invalid or expired token');
@@ -58,22 +61,18 @@ export class GameService {
       take: 20,
     });
 
-    const result = await Promise.all(
-      bestScores.map(async (entry) => {
-        const user = await this.prisma.user.findUnique({
-          where: { id: entry.userId },
-          select: { id: true, username: true, firstName: true },
-        });
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: bestScores.map((b) => b.userId) } },
+      select: { id: true, username: true, firstName: true },
+    });
 
-        return {
-          id: entry.userId,
-          score: entry._max.score,
-          user,
-        };
-      }),
-    );
+    const map = new Map(users.map((u) => [u.id, u]));
 
-    return result;
+    return bestScores.map((entry) => ({
+      id: entry.userId,
+      score: entry._max.score ?? 0,
+      user: map.get(entry.userId) ?? null,
+    }));
   }
 
   /** Начать игру */
@@ -82,8 +81,10 @@ export class GameService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
+      select: { id: true, isBlocked: true, extraTimeLevel: true },
     });
     if (!user) throw new UnauthorizedException('User not found');
+    if (user.isBlocked) throw new ForbiddenException('User is blocked');
 
     const baseDurationMs = 60_000; // 60 секунд
     const extraPerLevelMs = 5_000; // +5 секунд за уровень extra_time
@@ -95,6 +96,46 @@ export class GameService {
     });
 
     return { gameId: game.id, roundDurationMs };
+  }
+
+  // ✅ единая функция: “игру не засчитываем”, закрываем, без наград
+  private async invalidateGame(params: {
+    gameId: number;
+    userId: number;
+    reason: string;
+    // опционально: что пришло от клиента — чтобы видеть в логах
+    payload?: {
+      score?: number;
+      clicks?: number;
+      epicCount?: number;
+      melasCount?: number;
+    };
+  }) {
+    const { gameId, userId, reason, payload } = params;
+
+    try {
+      // Закрываем игру, чтобы нельзя было потом “дозавершить”
+      await this.prisma.game.update({
+        where: { id: gameId },
+        data: {
+          score: 0,
+          clicks: 0,
+          epicCount: 0,
+          melasCount: 0 as any, // если поля нет — убери строку
+          finishedAt: new Date(),
+        },
+      });
+    } catch (e) {
+      // даже если update не прошёл — просто лог
+      console.error('invalidateGame update failed', {
+        gameId,
+        userId,
+        reason,
+        e,
+      });
+    }
+
+    console.warn('⚠️ GAME INVALIDATED:', { userId, gameId, reason, payload });
   }
 
   /**
@@ -111,7 +152,7 @@ export class GameService {
   ) {
     const userId = this.getUserIdFromToken(token);
 
-    // 0️⃣ USER + BLOCK CHECK
+    // 0) user + block check
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -129,36 +170,33 @@ export class GameService {
     if (!user) throw new UnauthorizedException('User not found');
     if (user.isBlocked) throw new ForbiddenException('User is blocked');
 
-    // 1️⃣ BASIC VALIDATION
-    if (!gameId || Number.isNaN(gameId)) {
+    // 1) basic validation
+    if (!Number.isFinite(gameId) || gameId <= 0) {
       throw new BadRequestException('Invalid gameId');
     }
 
-    // safety cast (если прилетело undefined/null)
     const melasCountSafe = Number.isFinite(melasCount) ? melasCount : 0;
+    const scoreSafe = Number.isFinite(score) ? score : 0;
+    const clicksSafe = Number.isFinite(clicks) ? clicks : 0;
+    const epicCountSafe = Number.isFinite(epicCount) ? epicCount : 0;
 
-    if (![score, clicks, epicCount, melasCountSafe].every(Number.isFinite)) {
-      throw new BadRequestException('Invalid payload');
-    }
-
-    if (score < 0 || clicks < 0 || epicCount < 0 || melasCountSafe < 0) {
+    if (
+      [scoreSafe, clicksSafe, epicCountSafe, melasCountSafe].some((v) => v < 0)
+    ) {
       throw new BadRequestException('Negative values are not allowed');
     }
 
-    // 2️⃣ LOAD GAME + OWNERSHIP
-    const game = await this.prisma.game.findUnique({
-      where: { id: gameId },
-    });
+    // 2) load game + ownership
+    const game = await this.prisma.game.findUnique({ where: { id: gameId } });
 
     if (!game || game.userId !== userId) {
       throw new UnauthorizedException('Game not found or not yours');
     }
-
     if (game.finishedAt) {
       throw new BadRequestException('Game already finished');
     }
 
-    // 3️⃣ TIME VALIDATION
+    // 3) time validation (НЕ БАНИМ, просто не засчитываем)
     const BASE_DURATION_MS = 60_000;
     const EXTRA_TIME_PER_LEVEL_MS = 5_000;
     const ROUND_DURATION_MS =
@@ -166,35 +204,81 @@ export class GameService {
 
     const durationMs = Date.now() - game.createdAt.getTime();
 
-    if (durationMs < 8_000) {
-      await this.blockUser(userId, `finish too fast: ${durationMs}ms`);
-      throw new ForbiddenException('Cheat detected');
+    // ✅ снижено с 8000 → 5000 (меньше ложных срабатываний)
+    if (durationMs < 5_000) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: `finish too fast: ${durationMs}ms`,
+        payload: {
+          score: scoreSafe,
+          clicks: clicksSafe,
+          epicCount: epicCountSafe,
+          melasCount: melasCountSafe,
+        },
+      });
+      throw new BadRequestException('Game finished too fast (not counted)');
     }
 
-    if (durationMs > ROUND_DURATION_MS + 3_000) {
-      throw new BadRequestException('Round time exceeded');
+    // ✅ даём больше “запаса” по времени: +10 сек (на лаги/телеграм/фон)
+    if (durationMs > ROUND_DURATION_MS + 10_000) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: `round time exceeded: ${durationMs}ms > ${ROUND_DURATION_MS + 10_000}ms`,
+        payload: {
+          score: scoreSafe,
+          clicks: clicksSafe,
+          epicCount: epicCountSafe,
+          melasCount: melasCountSafe,
+        },
+      });
+      throw new BadRequestException('Round time exceeded (not counted)');
     }
 
-    // 4️⃣ ANTI-CHEAT
+    // 4) anti-cheat (НЕ БАНИМ, просто не засчитываем)
+    // Важное: любые странные метрики часто = баг клиента/дубль-запрос/глючный счетчик
     if (
-      clicks > 500 ||
-      epicCount > 80 ||
-      epicCount > clicks ||
-      melasCountSafe > clicks
+      clicksSafe > 600 || // было 500 — чуть поднял
+      epicCountSafe > 120 || // было 80 — слишком жёстко
+      epicCountSafe > clicksSafe || // невозможно
+      melasCountSafe > clicksSafe // невозможно
     ) {
-      await this.blockUser(userId, 'invalid game metrics');
-      throw new ForbiddenException('Cheat detected');
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: 'invalid game metrics',
+        payload: {
+          score: scoreSafe,
+          clicks: clicksSafe,
+          epicCount: epicCountSafe,
+          melasCount: melasCountSafe,
+        },
+      });
+      throw new BadRequestException('Invalid game metrics (not counted)');
     }
 
-    if (epicCount / Math.max(1, clicks) > 0.4) {
-      await this.blockUser(userId, 'epic ratio too high');
-      throw new ForbiddenException('Cheat detected');
+    // ratio check (делаем мягче)
+    const epicRatio = epicCountSafe / Math.max(1, clicksSafe);
+    if (epicRatio > 0.55) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: `epic ratio too high: ${epicRatio.toFixed(3)}`,
+        payload: {
+          score: scoreSafe,
+          clicks: clicksSafe,
+          epicCount: epicCountSafe,
+          melasCount: melasCountSafe,
+        },
+      });
+      throw new BadRequestException('Suspicious metrics (not counted)');
     }
 
-    // 5️⃣ SERVER SCORE
-    const serverScore = clicks + epicCount * 10;
+    // 5) server score (игнорируем client score)
+    const serverScore = clicksSafe + epicCountSafe * 10;
 
-    // 6️⃣ STARS
+    // 6) stars
     let starsEarned = Math.floor(serverScore / 12);
     starsEarned = Math.max(starsEarned, 3);
     starsEarned = Math.min(starsEarned, 25);
@@ -204,10 +288,10 @@ export class GameService {
 
     starsEarned = Math.min(starsEarned, 35);
 
-    // ✅ 6.5️⃣ MEAT — ТОЛЬКО ЗА MELAS (shot убран)
+    // 6.5) meat — только за melas
     const meatEarned = melasCountSafe;
 
-    // 7️⃣ XP + LEVEL
+    // 7) XP + level
     const xpGained = Math.floor(serverScore / 2);
 
     let newLevel = user.level;
@@ -216,23 +300,20 @@ export class GameService {
 
     while (newXp >= this.getXpForNextLevel(newLevel)) {
       newXp -= this.getXpForNextLevel(newLevel);
-      newLevel++;
+      newLevel += 1;
       leveledUp = true;
     }
 
-    // 8️⃣ TRANSACTION: GAME + USER
+    // 8) transaction: update game + user
     const [updatedGame, updatedUser] = await this.prisma.$transaction([
       this.prisma.game.update({
         where: { id: gameId },
         data: {
-          score,
-          clicks,
-          epicCount,
-
-          // ✅ Если ты добавил поле melasCount в Prisma Game — оставь.
-          // ❌ Если НЕ добавил — УДАЛИ следующую строку.
-          melasCount: melasCountSafe as any,
-
+          // ✅ пишем serverScore, а не клиентский score
+          score: serverScore,
+          clicks: clicksSafe,
+          epicCount: epicCountSafe,
+          melasCount: melasCountSafe as any, // если поля нет — убери строку
           finishedAt: new Date(),
         },
       }),
@@ -254,48 +335,54 @@ export class GameService {
       }),
     ]);
 
-    // 9️⃣ REFERRAL — FIRST GAME ONLY
+    // 9) referral — реально только за первый “засчитанный finished game”
     let referralRewardTickets = 0;
 
-    const referral = await this.prisma.referral.findFirst({
-      where: { invitedId: userId, rewarded: false },
-      include: { inviter: true },
+    const finishedCount = await this.prisma.game.count({
+      where: { userId, finishedAt: { not: null }, score: { gt: 0 } }, // score>0 = засчитанные игры
     });
 
-    if (referral?.inviter) {
-      const REFERRAL_TICKETS = 5;
-      referralRewardTickets = REFERRAL_TICKETS;
+    if (finishedCount === 1) {
+      const referral = await this.prisma.referral.findFirst({
+        where: { invitedId: userId, rewarded: false },
+        include: { inviter: true },
+      });
 
-      await this.prisma.$transaction([
-        ...Array.from({ length: REFERRAL_TICKETS }).map(() =>
-          this.prisma.ticket.create({
-            data: {
-              userId: referral.inviterId,
-              type: TicketType.REFERRAL,
-            },
+      if (referral?.inviter) {
+        const REFERRAL_TICKETS = 5;
+        referralRewardTickets = REFERRAL_TICKETS;
+
+        await this.prisma.$transaction([
+          ...Array.from({ length: REFERRAL_TICKETS }).map(() =>
+            this.prisma.ticket.create({
+              data: { userId: referral.inviterId, type: TicketType.REFERRAL },
+            }),
+          ),
+          this.prisma.referral.update({
+            where: { id: referral.id },
+            data: { rewarded: true },
           }),
-        ),
-        this.prisma.referral.update({
-          where: { id: referral.id },
-          data: { rewarded: true },
-        }),
-      ]);
+        ]);
 
-      try {
-        if (referral.inviter.telegramId) {
-          await this.notificationService.sendReferralReward(
-            referral.inviter.telegramId,
-            REFERRAL_TICKETS,
-          );
+        try {
+          if (referral.inviter.telegramId) {
+            await this.notificationService.sendReferralReward(
+              referral.inviter.telegramId,
+              REFERRAL_TICKETS,
+            );
+          }
+        } catch (e) {
+          console.error('Referral notification failed', e);
         }
-      } catch (e) {
-        console.error('Referral notification failed', e);
       }
     }
 
     return {
       ok: true,
       game: updatedGame,
+
+      // клиенту показываем то, что реально засчитано
+      serverScore,
 
       starsEarned,
       totalStars: updatedUser.stars,
@@ -319,7 +406,7 @@ export class GameService {
   }
 
   // ─────────────────────────────────────────
-  // DAILY QUESTS (как у тебя было)
+  // DAILY QUESTS (как у тебя было) — без изменений
   // ─────────────────────────────────────────
   async getDailyQuests(token: string) {
     const userId = this.getUserIdFromToken(token);
@@ -331,17 +418,17 @@ export class GameService {
     const [user, gamesToday] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: userId } }),
       this.prisma.game.findMany({
-        where: {
-          userId,
-          finishedAt: { gte: startOfDay },
-        },
+        where: { userId, finishedAt: { gte: startOfDay } },
       }),
     ]);
 
     if (!user) throw new UnauthorizedException('User not found');
 
     const totalClicks = gamesToday.reduce((sum, g) => sum + (g.clicks ?? 0), 0);
-    const totalEpics = gamesToday.reduce((sum, g) => sum + (g.epicCount ?? 0), 0);
+    const totalEpics = gamesToday.reduce(
+      (sum, g) => sum + (g.epicCount ?? 0),
+      0,
+    );
     const gamesCount = gamesToday.length;
 
     const quests = [
@@ -354,7 +441,8 @@ export class GameService {
         rewardLabel: '+100 ⭐',
         completed: totalClicks >= 1000,
         claimedToday:
-          !!user.dailyCatch1000ClaimAt && user.dailyCatch1000ClaimAt >= startOfDay,
+          !!user.dailyCatch1000ClaimAt &&
+          user.dailyCatch1000ClaimAt >= startOfDay,
       },
       {
         id: 'epic_100',
@@ -414,7 +502,10 @@ export class GameService {
     if (!user) throw new UnauthorizedException('User not found');
 
     const totalClicks = gamesToday.reduce((sum, g) => sum + (g.clicks ?? 0), 0);
-    const totalEpics = gamesToday.reduce((sum, g) => sum + (g.epicCount ?? 0), 0);
+    const totalEpics = gamesToday.reduce(
+      (sum, g) => sum + (g.epicCount ?? 0),
+      0,
+    );
     const gamesCount = gamesToday.length;
 
     let completed = false;
@@ -425,7 +516,8 @@ export class GameService {
     if (questId === 'catch_1000') {
       completed = totalClicks >= 1000;
       alreadyClaimed =
-        !!user.dailyCatch1000ClaimAt && user.dailyCatch1000ClaimAt >= startOfDay;
+        !!user.dailyCatch1000ClaimAt &&
+        user.dailyCatch1000ClaimAt >= startOfDay;
       reward = 100;
       userData.dailyCatch1000ClaimAt = now;
     } else if (questId === 'epic_100') {
@@ -445,13 +537,15 @@ export class GameService {
     }
 
     if (!completed) throw new BadRequestException('Quest not completed yet');
-    if (alreadyClaimed) throw new BadRequestException('Reward already claimed today');
+    if (alreadyClaimed)
+      throw new BadRequestException('Reward already claimed today');
 
     userData.stars = { increment: reward };
 
     const updatedUser = await this.prisma.user.update({
       where: { id: userId },
       data: userData,
+      select: { stars: true },
     });
 
     return { questId, reward, stars: updatedUser.stars };
