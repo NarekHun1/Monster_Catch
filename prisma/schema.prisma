@@ -27,28 +27,64 @@ model User {
   tonAddress            String?
   usdtAddress           String?
   usdtNetwork           String?
+  rouletteFreeDay       String?
+  rouletteLastSpinAt    DateTime?
+  meat                  Int       @default(0)
+  isBot                 Boolean   @default(false)
+  // ✅ Блокировки (текущий статус)
+  isBlocked             Boolean   @default(false)
+  blockedAt             DateTime?
+  blockedReason         String?
+  blockedByTgId         String? // кто заблокировал (админ tg id как string, чтобы не упираться в int/long)
+  unblockedAt           DateTime?
+  unblockedReason       String?
+  unblockedByTgId       String?
 
-  games              Game[]
-  payments           Payment[]
-  referralsReceived  Referral[]              @relation("UserInvited")
-  referralsSent      Referral[]              @relation("UserInviter")
-  tournaments        TournamentParticipant[]
-  withdrawals        Withdrawal[]
-  Ticket             Ticket[]
-  StarExchange       StarExchange[]
-  isBlocked          Boolean                 @default(false)
-  rouletteFreeDay    String?
-  rouletteLastSpinAt DateTime?
-  UserQuest          UserQuest[]
-  UserMonster        UserMonster[]
-  FarmSlot           FarmSlot[]
-  meat               Int                     @default(0)
-  MonsterHunt        MonsterHunt[]
-  isBot              Boolean                 @default(false)
+  // ✅ История блокировок
+  blockLogs UserBlockLog[]
+
   // ✅ Market
-  marketUnlocked     Boolean                 @default(false)
-  marketSales        MarketListing[]         @relation("MarketSeller")
-  marketPurchases    MarketListing[]         @relation("MarketBuyer")
+  marketUnlocked  Boolean         @default(false)
+  marketSales     MarketListing[] @relation("MarketSeller")
+  marketPurchases MarketListing[] @relation("MarketBuyer")
+
+  // relations
+  games             Game[]
+  payments          Payment[]
+  referralsReceived Referral[]              @relation("UserInvited")
+  referralsSent     Referral[]              @relation("UserInviter")
+  tournaments       TournamentParticipant[]
+  withdrawals       Withdrawal[]
+  Ticket            Ticket[]
+  StarExchange      StarExchange[]
+  UserQuest         UserQuest[]
+  UserMonster       UserMonster[]
+  FarmSlot          FarmSlot[]
+  MonsterHunt       MonsterHunt[]
+
+  @@index([lastSeenAt])
+  @@index([createdAt])
+  @@index([isBlocked])
+  @@index([isBot])
+}
+
+model UserBlockLog {
+  id        Int         @id @default(autoincrement())
+  userId    Int
+  action    BlockAction
+  reason    String?
+  actorTgId String? // кто сделал действие (tg id админа)
+  createdAt DateTime    @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+}
+
+enum BlockAction {
+  BLOCK
+  UNBLOCK
 }
 
 model Game {
@@ -61,7 +97,9 @@ model Game {
   epicCount  Int?      @default(0)
   melasCount Int?      @default(0)
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }
 
 model Referral {
@@ -70,10 +108,13 @@ model Referral {
   invitedId Int
   rewarded  Boolean  @default(false)
   createdAt DateTime @default(now())
-  invited   User     @relation("UserInvited", fields: [invitedId], references: [id])
-  inviter   User     @relation("UserInviter", fields: [inviterId], references: [id])
+
+  invited User @relation("UserInvited", fields: [invitedId], references: [id], onDelete: Cascade)
+  inviter User @relation("UserInviter", fields: [inviterId], references: [id], onDelete: Cascade)
 
   @@unique([inviterId, invitedId])
+  @@index([inviterId, createdAt])
+  @@index([invitedId, createdAt])
 }
 
 model Tournament {
@@ -87,10 +128,14 @@ model Tournament {
   endsAt       DateTime
   joinDeadline DateTime
   entryFee     Int
-  prizePool    Int                     @default(0)
-  status       TournamentStatus        @default(PLANNED)
-  createdAt    DateTime                @default(now())
+  prizePool    Int              @default(0)
+  status       TournamentStatus @default(PLANNED)
+  createdAt    DateTime         @default(now())
+
   participants TournamentParticipant[]
+
+  @@index([type, status, startsAt])
+  @@index([status, endsAt])
 }
 
 model TournamentParticipant {
@@ -99,12 +144,16 @@ model TournamentParticipant {
   tournamentId Int
   score        Int      @default(0)
   createdAt    DateTime @default(now())
-  payWith      String   @default("coins") // "coins" | "tickets"
 
-  tournament Tournament @relation(fields: [tournamentId], references: [id])
-  user       User       @relation(fields: [userId], references: [id])
+  // ✅ было String, делаем enum
+  payWith PayWith @default(coins)
+
+  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, tournamentId])
+  @@index([tournamentId, score])
+  @@index([userId, createdAt])
 }
 
 model Payment {
@@ -117,7 +166,9 @@ model Payment {
   userId                  Int
   createdAt               DateTime @default(now())
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }
 
 model Withdrawal {
@@ -134,7 +185,10 @@ model Withdrawal {
   createdAt   DateTime         @default(now())
   processedAt DateTime?
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
 }
 
 model Quest {
@@ -153,6 +207,9 @@ model Quest {
   createdAt DateTime @default(now())
 
   completions UserQuest[]
+
+  @@index([isActive, createdAt])
+  @@index([type, isActive])
 }
 
 model UserQuest {
@@ -165,11 +222,12 @@ model UserQuest {
   createdAt   DateTime        @default(now())
   openedAt    DateTime?
 
-  user  User  @relation(fields: [userId], references: [id])
-  quest Quest @relation(fields: [questId], references: [id])
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quest Quest @relation(fields: [questId], references: [id], onDelete: Cascade)
 
   @@unique([userId, questId])
   @@index([userId, status])
+  @@index([questId, status])
 }
 
 model StarExchange {
@@ -179,8 +237,11 @@ model StarExchange {
   ticketId  Int
   createdAt DateTime @default(now())
 
-  user   User   @relation(fields: [userId], references: [id])
-  ticket Ticket @relation(fields: [ticketId], references: [id])
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([ticketId])
 }
 
 model Ticket {
@@ -190,10 +251,12 @@ model Ticket {
   createdAt DateTime   @default(now())
   usedAt    DateTime?
 
-  user         User           @relation(fields: [userId], references: [id])
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   StarExchange StarExchange[]
 
   @@index([userId, type])
+  @@index([userId, usedAt])
+  @@index([type, createdAt])
 }
 
 model MonsterDef {
@@ -207,6 +270,9 @@ model MonsterDef {
 
   users          UserMonster[]
   marketListings MarketListing[]
+
+  @@index([isActive])
+  @@index([rarity, isActive])
 }
 
 model UserMonster {
@@ -224,15 +290,19 @@ model UserMonster {
   feedCountForHunt Int          @default(0) // 0..100
   hunt             MonsterHunt?
 
-  user    User       @relation(fields: [userId], references: [id])
-  monster MonsterDef @relation(fields: [monsterId], references: [id])
-  slots   FarmSlot[]
+  user    User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  monster MonsterDef @relation(fields: [monsterId], references: [id], onDelete: Restrict)
 
-  // ✅ один активный лот максимум (и вообще связь "лот для этого монстра")
+  slots FarmSlot[]
+
+  // ✅ один активный лот максимум
   marketListing MarketListing?
 
   @@unique([userId, monsterId])
   @@index([userId])
+  @@index([userId, updatedAt])
+  @@index([userId, level])
+  @@index([userId, feedCountForHunt])
 }
 
 model FarmSlot {
@@ -247,10 +317,11 @@ model FarmSlot {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  user        User         @relation(fields: [userId], references: [id])
-  userMonster UserMonster? @relation(fields: [userMonsterId], references: [id])
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userMonster UserMonster? @relation(fields: [userMonsterId], references: [id], onDelete: SetNull)
 
   @@unique([userId, slotIndex])
+  @@unique([userMonsterId]) // ✅ запретит один и тот же userMonsterId в 2 слота
   @@index([userId])
 }
 
@@ -262,6 +333,7 @@ model MonsterHunt {
   status    HuntStatus @default(RUNNING)
   startedAt DateTime   @default(now())
   endsAt    DateTime
+  claimedAt DateTime? // ✅ аналитика/история
 
   rewardStars   Int @default(0)
   rewardTickets Int @default(0)
@@ -271,10 +343,11 @@ model MonsterHunt {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user        User        @relation(fields: [userId], references: [id])
-  userMonster UserMonster @relation(fields: [userMonsterId], references: [id])
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userMonster UserMonster @relation(fields: [userMonsterId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([status, endsAt])
 }
 
 model MarketListing {
@@ -294,14 +367,16 @@ model MarketListing {
   createdAt     DateTime  @default(now())
   soldAt        DateTime?
 
-  seller      User        @relation("MarketSeller", fields: [sellerId], references: [id])
-  buyer       User?       @relation("MarketBuyer", fields: [buyerId], references: [id])
-  userMonster UserMonster @relation(fields: [userMonsterId], references: [id])
-  monster     MonsterDef  @relation(fields: [monsterId], references: [id])
+  seller      User        @relation("MarketSeller", fields: [sellerId], references: [id], onDelete: Cascade)
+  buyer       User?       @relation("MarketBuyer", fields: [buyerId], references: [id], onDelete: SetNull)
+  userMonster UserMonster @relation(fields: [userMonsterId], references: [id], onDelete: Restrict)
+  monster     MonsterDef  @relation(fields: [monsterId], references: [id], onDelete: Restrict)
 
   @@unique([userMonsterId]) // 1 лот на 1 UserMonster
   @@index([status, createdAt])
+  @@index([status, monsterId, price])
   @@index([sellerId, status])
+  @@index([buyerId, status])
 }
 
 enum QuestType {
@@ -332,6 +407,7 @@ enum TicketType {
   REFERRAL
   ROULETTE
   QUEST
+  HUNT
 }
 
 enum WithdrawalStatus {
