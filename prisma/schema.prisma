@@ -40,6 +40,11 @@ model User {
   unblockedReason       String?
   unblockedByTgId       String?
 
+  // ✅ Telegram status (НЕ бан)
+  telegramBlocked       Boolean   @default(false) // user blocked bot / deactivated / chat not found
+  telegramBlockedAt     DateTime?
+  telegramBlockedReason String?
+
   // ✅ История блокировок
   blockLogs UserBlockLog[]
 
@@ -66,6 +71,8 @@ model User {
   @@index([createdAt])
   @@index([isBlocked])
   @@index([isBot])
+  @@index([telegramBlocked])
+  @@index([telegramBlockedAt])
 }
 
 model UserBlockLog {

@@ -36,7 +36,6 @@ export class TournamentBroadcastService implements OnModuleInit {
     @InjectBot() private readonly bot: Telegraf,
   ) {}
 
-  // ✅ При старте регистрируем хендлер, чтобы бот сам отдавал file_id
   onModuleInit() {
     this.registerAdminFileIdListener();
     this.logger.log('✅ Admin file_id listener registered');
@@ -44,7 +43,6 @@ export class TournamentBroadcastService implements OnModuleInit {
 
   /**
    * ✅ Когда ADMIN отправляет боту фото -> бот отвечает file_id
-   * Это работает при webhook и без getUpdates.
    */
   private registerAdminFileIdListener() {
     this.bot.on('photo', async (ctx) => {
@@ -173,9 +171,11 @@ export class TournamentBroadcastService implements OnModuleInit {
     try {
       const cleaned = b64.replace(/\s+/g, '');
       buf = Buffer.from(cleaned, 'base64');
-      this.logger.log(`🧾 Base64 decoded successfully | Size: ${buf.length} bytes`);
+      this.logger.log(
+        `🧾 Base64 decoded successfully | Size: ${buf.length} bytes`,
+      );
     } catch (err) {
-      this.logger.error('❌ Invalid base64 provided', err as any);
+      this.logger.error('❌ Invalid base64 provided', err);
       throw new BadRequestException('Invalid base64');
     }
 
@@ -208,7 +208,9 @@ export class TournamentBroadcastService implements OnModuleInit {
 
     if (!fileId) {
       this.logger.error('❌ file_id not found in Telegram response', msg);
-      throw new BadRequestException('Could not extract file_id from Telegram response');
+      throw new BadRequestException(
+        'Could not extract file_id from Telegram response',
+      );
     }
 
     return {
@@ -244,7 +246,7 @@ export class TournamentBroadcastService implements OnModuleInit {
     } catch (e: any) {
       const desc = e?.response?.description || e?.message || String(e);
 
-      const isBlocked =
+      const isTelegramBlocked =
         String(desc).includes('bot was blocked') ||
         String(desc).includes('Forbidden: bot was blocked by the user') ||
         String(desc).includes('chat not found') ||
@@ -255,15 +257,56 @@ export class TournamentBroadcastService implements OnModuleInit {
       return {
         ok: false as const,
         desc,
-        isBlocked,
+        isTelegramBlocked,
         retryAfter: typeof retryAfter === 'number' ? retryAfter : undefined,
       };
     }
   }
 
   /**
+   * ✅ Помечаем пользователя как "недоступен в Telegram"
+   * (НЕ бан, НЕ isBlocked)
+   *
+   * ⚠️ Если у тебя ещё нет полей telegramBlocked*, update упадёт.
+   * Тогда мы просто логируем и продолжаем.
+   */
+  private async markTelegramBlocked(userId: number, reason: string) {
+    try {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          telegramBlocked: true as any,
+          telegramBlockedAt: new Date() as any,
+          telegramBlockedReason: reason.slice(0, 250) as any,
+        },
+      });
+    } catch (e) {
+      this.logger.warn(
+        `markTelegramBlocked skipped (fields missing?) userId=${userId} reason=${reason}`,
+      );
+    }
+  }
+
+  /**
+   * ✅ (Опционально) если захотишь "оживлять" юзера,
+   * например когда он снова написал боту
+   */
+  private async unmarkTelegramBlocked(userId: number) {
+    try {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          telegramBlocked: false as any,
+          telegramBlockedAt: null as any,
+          telegramBlockedReason: null as any,
+        },
+      });
+    } catch {}
+  }
+
+  /**
    * ✅ Broadcast photo + text to all users (one-time)
-   * Returns blocked ids + sample errors.
+   * НЕ баним пользователей. Только помечаем telegramBlocked.
    */
   async broadcastBigTournamentOnce(params: { photo: string; botLink: string }) {
     const caption = [
@@ -281,7 +324,11 @@ export class TournamentBroadcastService implements OnModuleInit {
     ].join('\n');
 
     const users = await this.prisma.user.findMany({
-      where: { telegramId: { not: '' }, isBlocked: false },
+      where: {
+        telegramId: { not: '' },
+        isBlocked: false, // ✅ реальные баны
+        telegramBlocked: false as any, // ✅ TG unreachable (если поля нет — всё равно ок)
+      },
       select: { id: true, telegramId: true },
       orderBy: { id: 'asc' },
     });
@@ -291,27 +338,37 @@ export class TournamentBroadcastService implements OnModuleInit {
         total: 0,
         sent: 0,
         failed: 0,
-        blocked: 0,
-        blockedIds: [] as number[],
-        blockedTelegramIds: [] as string[],
-        failSamples: [] as { userId: number; telegramId: string; desc: string }[],
+        telegramBlocked: 0,
+        telegramBlockedIds: [] as number[],
+        telegramBlockedTelegramIds: [] as string[],
+        failSamples: [] as {
+          userId: number;
+          telegramId: string;
+          desc: string;
+        }[],
         aliveEstimate: 0,
       };
     }
 
     let sent = 0;
     let failed = 0;
-    let blocked = 0;
+    let telegramBlocked = 0;
 
-    const blockedIds: number[] = [];
-    const blockedTelegramIds: string[] = [];
-    const failSamples: { userId: number; telegramId: string; desc: string }[] = [];
+    const telegramBlockedIds: number[] = [];
+    const telegramBlockedTelegramIds: string[] = [];
+    const failSamples: { userId: number; telegramId: string; desc: string }[] =
+      [];
 
     for (const u of users) {
       const chatId = Number(u.telegramId);
       if (!Number.isFinite(chatId)) continue;
 
-      const res = await this.safeSendPhoto(chatId, params.photo, caption, params.botLink);
+      const res = await this.safeSendPhoto(
+        chatId,
+        params.photo,
+        caption,
+        params.botLink,
+      );
 
       if (res.ok) {
         sent++;
@@ -321,20 +378,19 @@ export class TournamentBroadcastService implements OnModuleInit {
 
       failed++;
 
-      if (res.isBlocked) {
-        blocked++;
-        blockedIds.push(u.id);
-        blockedTelegramIds.push(u.telegramId);
+      if (res.isTelegramBlocked) {
+        telegramBlocked++;
+        telegramBlockedIds.push(u.id);
+        telegramBlockedTelegramIds.push(u.telegramId);
 
-        try {
-          await this.prisma.user.update({
-            where: { id: u.id },
-            data: { isBlocked: true },
-          });
-        } catch {}
+        await this.markTelegramBlocked(u.id, res.desc || 'telegram blocked');
       } else {
         if (failSamples.length < 30) {
-          failSamples.push({ userId: u.id, telegramId: u.telegramId, desc: res.desc });
+          failSamples.push({
+            userId: u.id,
+            telegramId: u.telegramId,
+            desc: res.desc,
+          });
         }
       }
 
@@ -351,18 +407,16 @@ export class TournamentBroadcastService implements OnModuleInit {
       total: users.length,
       sent,
       failed,
-      blocked,
-      blockedIds,
-      blockedTelegramIds,
+      telegramBlocked,
+      telegramBlockedIds,
+      telegramBlockedTelegramIds,
       failSamples,
-      aliveEstimate: users.length - blocked,
+      aliveEstimate: users.length - telegramBlocked,
     };
   }
 
   /**
    * ✅ Broadcast only N users (test)
-   * - if userIds provided: sends only to these users
-   * - else: takes first N users by id asc
    */
   async broadcastBigTournamentToNOnce(params: {
     photo: string;
@@ -384,29 +438,50 @@ export class TournamentBroadcastService implements OnModuleInit {
       `👉 ${params.botLink}`,
     ].join('\n');
 
-    const where: any = { telegramId: { not: '' }, isBlocked: false };
+    const where: any = {
+      telegramId: { not: '' },
+      isBlocked: false,
+      telegramBlocked: false, // если поля нет — prisma может ругнуться в рантайме; см. ниже
+    };
     if (params.userIds?.length) where.id = { in: params.userIds };
 
-    const users = await this.prisma.user.findMany({
-      where,
-      select: { id: true, telegramId: true },
-      orderBy: { id: 'asc' },
-      take: params.userIds?.length ? undefined : Math.max(1, params.limit),
-    });
+    let users: { id: number; telegramId: string }[] = [];
+
+    // ✅ Чтобы не упасть если telegramBlocked ещё нет в БД — делаем try/catch
+    try {
+      users = await this.prisma.user.findMany({
+        where,
+        select: { id: true, telegramId: true },
+        orderBy: { id: 'asc' },
+        take: params.userIds?.length ? undefined : Math.max(1, params.limit),
+      });
+    } catch {
+      // fallback: если полей telegramBlocked нет — шлём всем не-banned
+      users = await this.prisma.user.findMany({
+        where: {
+          telegramId: { not: '' },
+          isBlocked: false,
+          ...(params.userIds?.length ? { id: { in: params.userIds } } : {}),
+        },
+        select: { id: true, telegramId: true },
+        orderBy: { id: 'asc' },
+        take: params.userIds?.length ? undefined : Math.max(1, params.limit),
+      });
+    }
 
     if (!users.length) {
       return {
         total: 0,
         sent: 0,
         failed: 0,
-        blocked: 0,
+        telegramBlocked: 0,
         ids: [] as number[],
       };
     }
 
     let sent = 0;
     let failed = 0;
-    let blocked = 0;
+    let telegramBlocked = 0;
     const ids: number[] = [];
 
     for (const u of users) {
@@ -415,7 +490,12 @@ export class TournamentBroadcastService implements OnModuleInit {
       const chatId = Number(u.telegramId);
       if (!Number.isFinite(chatId)) continue;
 
-      const res = await this.safeSendPhoto(chatId, params.photo, caption, params.botLink);
+      const res = await this.safeSendPhoto(
+        chatId,
+        params.photo,
+        caption,
+        params.botLink,
+      );
 
       if (res.ok) {
         sent++;
@@ -425,14 +505,9 @@ export class TournamentBroadcastService implements OnModuleInit {
 
       failed++;
 
-      if (res.isBlocked) {
-        blocked++;
-        try {
-          await this.prisma.user.update({
-            where: { id: u.id },
-            data: { isBlocked: true },
-          });
-        } catch {}
+      if (res.isTelegramBlocked) {
+        telegramBlocked++;
+        await this.markTelegramBlocked(u.id, res.desc || 'telegram blocked');
       }
 
       if (typeof res.retryAfter === 'number') {
@@ -446,6 +521,6 @@ export class TournamentBroadcastService implements OnModuleInit {
       );
     }
 
-    return { total: users.length, sent, failed, blocked, ids };
+    return { total: users.length, sent, failed, telegramBlocked, ids };
   }
 }
