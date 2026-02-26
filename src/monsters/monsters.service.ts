@@ -58,10 +58,9 @@ export class MonstersService {
           imgUrl: r.monster.imgUrl,
           count: r.count,
           level,
-          // после 5 уровня xp не нужен
           xp: level >= this.MAX_LEVEL ? 0 : r.xp,
           xpNext: level >= this.MAX_LEVEL ? 0 : this.xpForNextLevel(level),
-          feedCountForHunt: r.feedCountForHunt, // если у тебя есть это поле — фронту удобно
+          feedCountForHunt: r.feedCountForHunt,
         };
       }),
     };
@@ -104,7 +103,6 @@ export class MonstersService {
           isUnlocked: s.isUnlocked,
           unlockPrice: s.unlockPrice,
 
-          // оставляю для совместимости с твоим фронтом
           fedCountToday: s.fedCountToday,
           lastFedAt: s.lastFedAt,
 
@@ -140,19 +138,10 @@ export class MonstersService {
   private rollHuntReward() {
     const r = Math.random() * 100;
 
-    // 15% ничего
     if (r < 15) return { stars: 0, tickets: 0, coins: 0, meat: 0 };
-
-    // 25%: 10 stars 1 bilet 1 coin
     if (r < 40) return { stars: 10, tickets: 1, coins: 1, meat: 0 };
-
-    // 20%: 10 meat 10 stars 1 bilet
     if (r < 60) return { stars: 10, tickets: 1, coins: 0, meat: 10 };
-
-    // 20%: 5 meat 5 stars 1 coin
     if (r < 80) return { stars: 5, tickets: 0, coins: 1, meat: 5 };
-
-    // 20%: 10 meat
     return { stars: 0, tickets: 0, coins: 0, meat: 10 };
   }
 
@@ -202,11 +191,9 @@ export class MonstersService {
     if (!um || um.userId !== userId)
       throw new BadRequestException('Monster not yours');
 
-    // ✅ только 5 уровень (выше у нас не бывает)
     if (um.level < this.MAX_LEVEL)
       throw new ForbiddenException('Monster level must be 5');
 
-    // ✅ каждый раз нужно 100 кормлений
     if (um.feedCountForHunt < 100)
       throw new ForbiddenException('Need 100 feedings to hunt');
 
@@ -264,7 +251,6 @@ export class MonstersService {
     const reward = this.rollHuntReward();
 
     const result = await this.prisma.$transaction(async (tx) => {
-      // 1) начислить награду
       await tx.user.update({
         where: { id: userId },
         data: {
@@ -275,7 +261,6 @@ export class MonstersService {
         select: { id: true },
       });
 
-      // tickets — через Ticket таблицу
       if (reward.tickets > 0) {
         await tx.ticket.createMany({
           data: Array.from({ length: reward.tickets }, () => ({
@@ -285,7 +270,6 @@ export class MonstersService {
         });
       }
 
-      // 2) зафиксировать reward и закрыть hunt
       const updatedHunt = await tx.monsterHunt.update({
         where: { userMonsterId },
         data: {
@@ -297,7 +281,6 @@ export class MonstersService {
         },
       });
 
-      // 3) сбросить прогресс 100 кормлений (чтобы каждый раз заново)
       await tx.userMonster.update({
         where: { id: userMonsterId },
         data: { feedCountForHunt: 0 },
@@ -357,11 +340,13 @@ export class MonstersService {
     return { ok: true, coins: updatedUser.coins, slot: updatedSlot };
   }
 
-  async assignToSlot(
-    authHeader: string,
-    slotIndex: number,
-    userMonsterId: number,
-  ) {
+  // ─────────────────────────────────────────────
+  // ✅ FIXED: ASSIGN / MOVE MONSTER TO SLOT
+  // - prevents P2002 (unique userMonsterId)
+  // - atomic move with transaction
+  // - idempotent (if already in same slot → ok)
+  // ─────────────────────────────────────────────
+  async assignToSlot(authHeader: string, slotIndex: number, userMonsterId: number) {
     const userId = this.getUserId(authHeader);
 
     if (!Number.isFinite(slotIndex) || slotIndex < 1) {
@@ -375,13 +360,14 @@ export class MonstersService {
 
     const slot = await this.prisma.farmSlot.findUnique({
       where: { userId_slotIndex: { userId, slotIndex } },
+      select: { slotIndex: true, isUnlocked: true, userMonsterId: true },
     });
     if (!slot) throw new BadRequestException('Slot not found');
     if (!slot.isUnlocked) throw new ForbiddenException('Slot locked');
 
     const um = await this.prisma.userMonster.findUnique({
       where: { id: userMonsterId },
-      include: { monster: true },
+      select: { id: true, userId: true, count: true },
     });
     if (!um || um.userId !== userId) {
       throw new BadRequestException('Monster not yours');
@@ -390,9 +376,29 @@ export class MonstersService {
       throw new BadRequestException('You have 0 of this monster');
     }
 
-    await this.prisma.farmSlot.update({
-      where: { userId_slotIndex: { userId, slotIndex } },
-      data: { userMonsterId: um.id },
+    await this.prisma.$transaction(async (tx) => {
+      // где сейчас стоит этот монстр (если стоит)
+      const already = await tx.farmSlot.findFirst({
+        where: { userId, userMonsterId: um.id },
+        select: { slotIndex: true },
+      });
+
+      // уже в этом слоте — ок (идемпотентность)
+      if (already?.slotIndex === slotIndex) return;
+
+      // если стоит в другом слоте — снять
+      if (already) {
+        await tx.farmSlot.update({
+          where: { userId_slotIndex: { userId, slotIndex: already.slotIndex } },
+          data: { userMonsterId: null },
+        });
+      }
+
+      // поставить в новый слот (заменит предыдущего монстра в этом слоте, если был)
+      await tx.farmSlot.update({
+        where: { userId_slotIndex: { userId, slotIndex } },
+        data: { userMonsterId: um.id },
+      });
     });
 
     return { ok: true };
@@ -400,10 +406,6 @@ export class MonstersService {
 
   // ─────────────────────────────────────────────
   // FEED
-  // Rules:
-  // - MAX LEVEL = 5 (no levels above 5)
-  // - after reaching 5, each feeding increments feedCountForHunt (max 100)
-  // - hunt requires level 5 and feedCountForHunt >= 100
   // ─────────────────────────────────────────────
   async feed(authHeader: string, slotIndex: number) {
     const userId = this.getUserId(authHeader);
@@ -423,15 +425,10 @@ export class MonstersService {
 
     const um = slot.userMonster;
 
-    // ✅ запретить кормить если монстр на охоте
     const running = await this.prisma.monsterHunt.findUnique({
       where: { userMonsterId: um.id },
     });
-    if (
-      running &&
-      running.status === 'RUNNING' &&
-      this.secondsLeft(running.endsAt) > 0
-    ) {
+    if (running && running.status === 'RUNNING' && this.secondsLeft(running.endsAt) > 0) {
       throw new ForbiddenException('Monster is on hunt');
     }
 
@@ -440,7 +437,6 @@ export class MonstersService {
     let level = Math.min(this.MAX_LEVEL, um.level);
     let xp = um.xp;
 
-    // ✅ уровень растёт только до 5
     if (level < this.MAX_LEVEL) {
       xp = um.xp + 1;
 
@@ -449,57 +445,48 @@ export class MonstersService {
         level += 1;
       }
 
-      // дошли до 5 — XP больше не храним
       if (level >= this.MAX_LEVEL) {
         level = this.MAX_LEVEL;
         xp = 0;
       }
     } else {
-      // на 5 уровне XP не растёт
       level = this.MAX_LEVEL;
       xp = 0;
     }
 
-    const [meatLeft, updatedMonster] = await this.prisma.$transaction(
-      async (tx) => {
-        // 1) списать мясо (и проверить что хватило)
-        const u = await tx.user.updateMany({
-          where: { id: userId, meat: { gte: MEAT_COST } },
-          data: { meat: { decrement: MEAT_COST } },
-        });
+    const [meatLeft, updatedMonster] = await this.prisma.$transaction(async (tx) => {
+      const u = await tx.user.updateMany({
+        where: { id: userId, meat: { gte: MEAT_COST } },
+        data: { meat: { decrement: MEAT_COST } },
+      });
 
-        if (u.count !== 1) {
-          throw new ForbiddenException('Not enough meat');
-        }
+      if (u.count !== 1) {
+        throw new ForbiddenException('Not enough meat');
+      }
 
-        // 2) вернуть актуальный баланс мяса
-        const user = await tx.user.findUnique({
-          where: { id: userId },
-          select: { meat: true },
-        });
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { meat: true },
+      });
+      if (!user) throw new UnauthorizedException('User not found');
 
-        // 3) аккуратно посчитать новый feedCountForHunt (cap 100) только на 5 уровне
-        let nextFeedCount = um.feedCountForHunt ?? 0;
-        if (level >= this.MAX_LEVEL) {
-          nextFeedCount = Math.min(100, nextFeedCount + 1);
-        }
+      let nextFeedCount = um.feedCountForHunt ?? 0;
+      if (level >= this.MAX_LEVEL) {
+        nextFeedCount = Math.min(100, nextFeedCount + 1);
+      }
 
-        // 4) апдейт монстра
-        const monster = await tx.userMonster.update({
-          where: { id: um.id },
-          data: {
-            level,
-            xp,
-            ...(level >= this.MAX_LEVEL
-              ? { feedCountForHunt: nextFeedCount }
-              : {}),
-          },
-          select: { id: true, level: true, xp: true, feedCountForHunt: true },
-        });
+      const monster = await tx.userMonster.update({
+        where: { id: um.id },
+        data: {
+          level,
+          xp,
+          ...(level >= this.MAX_LEVEL ? { feedCountForHunt: nextFeedCount } : {}),
+        },
+        select: { id: true, level: true, xp: true, feedCountForHunt: true },
+      });
 
-        return [user!.meat, monster] as const;
-      },
-    );
+      return [user.meat, monster] as const;
+    });
 
     return {
       ok: true,
@@ -551,7 +538,6 @@ export class MonstersService {
 
   // ─────────────────────────────────────────────
   // INTERNAL: ensure slots exist (8)
-  // safer: createMany + skipDuplicates
   // ─────────────────────────────────────────────
   private async ensureFarmSlots(userId: number, total: number) {
     const prices = Array.from({ length: total }, (_, i) => {
