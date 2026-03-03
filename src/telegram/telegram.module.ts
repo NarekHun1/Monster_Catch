@@ -14,9 +14,7 @@ import { PaymentModule } from '../payments/payments.module';
     TelegrafModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
-        const token = config.getOrThrow<string>('TELEGRAM_BOT_TOKEN');
-        console.log('TELEGRAM_BOT_TOKEN =', token);
-        return { token };
+        const token = config.getOrThrow<string>('TELEGRAM_BOT_TOKEN');return { token };
       },
     }),
   ],
