@@ -34,11 +34,12 @@ export class SummonService {
     userId: number,
     tx: Prisma.TransactionClient | PrismaService = this.prisma,
   ) {
-    let state = await tx.userSummonState.findUnique({ where: { userId } });
+    const client = tx as any;
+    let state = await client.userSummonState.findUnique({ where: { userId } });
     const now = new Date();
 
     if (!state) {
-      state = await tx.userSummonState.create({
+      state = await client.userSummonState.create({
         data: {
           userId,
           pityBasic: 0,
@@ -49,7 +50,7 @@ export class SummonService {
         },
       });
     } else if (state.resetAt <= now) {
-      state = await tx.userSummonState.update({
+      state = await client.userSummonState.update({
         where: { userId },
         data: {
           dailySummons: 0,
@@ -245,7 +246,8 @@ export class SummonService {
       const isHighRarity = rarity === 'EPIC' || rarity === 'LEGENDARY';
       const pityAfter = isHighRarity ? 0 : pityBefore + 1;
 
-      await tx.userSummonState.update({
+      const client2 = tx as any;
+      await client2.userSummonState.update({
         where: { userId },
         data: {
           [cfg.pityField]: pityAfter,
@@ -253,7 +255,7 @@ export class SummonService {
         },
       });
 
-      const log = await tx.summonLog.create({
+      const log = await client2.summonLog.create({
         data: {
           userId,
           mode: dto.mode,

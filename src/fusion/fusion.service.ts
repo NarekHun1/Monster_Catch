@@ -38,11 +38,12 @@ export class FusionService {
     userId: number,
     tx: Prisma.TransactionClient | PrismaService = this.prisma,
   ) {
-    let state = await tx.userFusionState.findUnique({ where: { userId } });
+    const client = tx as any;
+    let state = await client.userFusionState.findUnique({ where: { userId } });
     const now = new Date();
 
     if (!state) {
-      state = await tx.userFusionState.create({
+      state = await client.userFusionState.create({
         data: {
           userId,
           pityStandard: 0,
@@ -53,7 +54,7 @@ export class FusionService {
         },
       });
     } else if (state.resetAt <= now) {
-      state = await tx.userFusionState.update({
+      state = await client.userFusionState.update({
         where: { userId },
         data: {
           dailyFusions: 0,
@@ -172,7 +173,7 @@ export class FusionService {
     const userId = this.getUserId(authHeader);
     const now = new Date();
 
-    const tokens = await this.prisma.fusionToken.findMany({
+    const tokens = await (this.prisma as any).fusionToken.findMany({
       where: {
         userId,
         usedAt: null,
@@ -199,7 +200,7 @@ export class FusionService {
         select: { coins: true, stars: true },
       }),
       this.getFusionState(userId),
-      this.prisma.fusionToken.findFirst({
+      (this.prisma as any).fusionToken.findFirst({
         where: {
           userId,
           kind: 'PROTECTION',
@@ -311,7 +312,8 @@ export class FusionService {
       // optional protection token
       let protectionToken: { id: number } | null = null;
       if (dto.useProtection) {
-        protectionToken = await tx.fusionToken.findFirst({
+        const client = tx as any;
+        protectionToken = await client.fusionToken.findFirst({
           where: {
             userId,
             kind: 'PROTECTION',
@@ -345,7 +347,8 @@ export class FusionService {
 
       // consume protection token if any
       if (protectionToken) {
-        await tx.fusionToken.update({
+        const client = tx as any;
+        await client.fusionToken.update({
           where: { id: protectionToken.id },
           data: { usedAt: now },
         });
@@ -367,7 +370,8 @@ export class FusionService {
       const pityAfter = isHighRarity ? 0 : pityBefore + 1;
 
       // update fusion state
-      await tx.userFusionState.update({
+      const client2 = tx as any;
+      await client2.userFusionState.update({
         where: { userId },
         data: {
           [cfg.pityField]: pityAfter,
@@ -375,7 +379,7 @@ export class FusionService {
         },
       });
 
-      const log = await tx.fusionLog.create({
+      const log = await client2.fusionLog.create({
         data: {
           userId,
           mode: dto.mode,
