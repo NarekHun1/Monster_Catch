@@ -108,18 +108,18 @@ export class MonstersService {
 
           monster: um
             ? {
-                userMonsterId: um.id,
-                monsterId: um.monsterId,
-                key: um.monster.key,
-                name: um.monster.name,
-                rarity: um.monster.rarity,
-                imgUrl: um.monster.imgUrl,
-                count: um.count,
-                level: lvl!,
-                xp: lvl! >= this.MAX_LEVEL ? 0 : um.xp,
-                xpNext: lvl! >= this.MAX_LEVEL ? 0 : this.xpForNextLevel(lvl!),
-                feedCountForHunt: um.feedCountForHunt,
-              }
+              userMonsterId: um.id,
+              monsterId: um.monsterId,
+              key: um.monster.key,
+              name: um.monster.name,
+              rarity: um.monster.rarity,
+              imgUrl: um.monster.imgUrl,
+              count: um.count,
+              level: lvl!,
+              xp: lvl! >= this.MAX_LEVEL ? 0 : um.xp,
+              xpNext: lvl! >= this.MAX_LEVEL ? 0 : this.xpForNextLevel(lvl!),
+              feedCountForHunt: um.feedCountForHunt,
+            }
             : null,
         };
       }),
@@ -346,11 +346,7 @@ export class MonstersService {
   // - atomic move with transaction
   // - idempotent (if already in same slot → ok)
   // ─────────────────────────────────────────────
-  async assignToSlot(
-    authHeader: string,
-    slotIndex: number,
-    userMonsterId: number,
-  ) {
+  async assignToSlot(authHeader: string, slotIndex: number, userMonsterId: number) {
     const userId = this.getUserId(authHeader);
 
     if (!Number.isFinite(slotIndex) || slotIndex < 1) {
@@ -432,11 +428,7 @@ export class MonstersService {
     const running = await this.prisma.monsterHunt.findUnique({
       where: { userMonsterId: um.id },
     });
-    if (
-      running &&
-      running.status === 'RUNNING' &&
-      this.secondsLeft(running.endsAt) > 0
-    ) {
+    if (running && running.status === 'RUNNING' && this.secondsLeft(running.endsAt) > 0) {
       throw new ForbiddenException('Monster is on hunt');
     }
 
@@ -462,43 +454,39 @@ export class MonstersService {
       xp = 0;
     }
 
-    const [meatLeft, updatedMonster] = await this.prisma.$transaction(
-      async (tx) => {
-        const u = await tx.user.updateMany({
-          where: { id: userId, meat: { gte: MEAT_COST } },
-          data: { meat: { decrement: MEAT_COST } },
-        });
+    const [meatLeft, updatedMonster] = await this.prisma.$transaction(async (tx) => {
+      const u = await tx.user.updateMany({
+        where: { id: userId, meat: { gte: MEAT_COST } },
+        data: { meat: { decrement: MEAT_COST } },
+      });
 
-        if (u.count !== 1) {
-          throw new ForbiddenException('Not enough meat');
-        }
+      if (u.count !== 1) {
+        throw new ForbiddenException('Not enough meat');
+      }
 
-        const user = await tx.user.findUnique({
-          where: { id: userId },
-          select: { meat: true },
-        });
-        if (!user) throw new UnauthorizedException('User not found');
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { meat: true },
+      });
+      if (!user) throw new UnauthorizedException('User not found');
 
-        let nextFeedCount = um.feedCountForHunt ?? 0;
-        if (level >= this.MAX_LEVEL) {
-          nextFeedCount = Math.min(100, nextFeedCount + 1);
-        }
+      let nextFeedCount = um.feedCountForHunt ?? 0;
+      if (level >= this.MAX_LEVEL) {
+        nextFeedCount = Math.min(100, nextFeedCount + 1);
+      }
 
-        const monster = await tx.userMonster.update({
-          where: { id: um.id },
-          data: {
-            level,
-            xp,
-            ...(level >= this.MAX_LEVEL
-              ? { feedCountForHunt: nextFeedCount }
-              : {}),
-          },
-          select: { id: true, level: true, xp: true, feedCountForHunt: true },
-        });
+      const monster = await tx.userMonster.update({
+        where: { id: um.id },
+        data: {
+          level,
+          xp,
+          ...(level >= this.MAX_LEVEL ? { feedCountForHunt: nextFeedCount } : {}),
+        },
+        select: { id: true, level: true, xp: true, feedCountForHunt: true },
+      });
 
-        return [user.meat, monster] as const;
-      },
-    );
+      return [user.meat, monster] as const;
+    });
 
     return {
       ok: true,
