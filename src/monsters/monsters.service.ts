@@ -135,6 +135,34 @@ export class MonstersService {
     return Math.max(0, Math.floor((endsAt.getTime() - Date.now()) / 1000));
   }
 
+  // ─────────────────────────────────────────────
+  // HUNT → FUSION TOKEN DROP
+  // ─────────────────────────────────────────────
+  private rollFusionTokenDrop() {
+    const DROP_CHANCE = 20; // 20% base chance
+    const r = Math.random() * 100;
+    if (r > DROP_CHANCE) return null;
+
+    // rarity split inside drop
+    let rarity: 'LOW' | 'MEDIUM' | 'HIGH' = 'LOW';
+    const rr = Math.random() * 100;
+    if (rr < 70) rarity = 'LOW';
+    else if (rr < 95) rarity = 'MEDIUM';
+    else rarity = 'HIGH';
+
+    const expiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    const key = `hunt_${rarity.toLowerCase()}_${Date.now()}_${Math.floor(
+      Math.random() * 1_000_000,
+    )}`;
+
+    return {
+      kind: 'HUNT_DROP' as const,
+      rarity,
+      key,
+      expiresAt,
+    };
+  }
+
   private rollHuntReward() {
     const r = Math.random() * 100;
 
@@ -249,6 +277,7 @@ export class MonstersService {
     if (left > 0) throw new ForbiddenException('Not ready yet');
 
     const reward = this.rollHuntReward();
+    const tokenDrop = this.rollFusionTokenDrop();
 
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.user.update({
@@ -281,20 +310,48 @@ export class MonstersService {
         },
       });
 
+      let createdToken: {
+        id: number;
+        kind: string;
+        rarity: string;
+        key: string;
+        expiresAt: Date | null;
+      } | null = null;
+
+      if (tokenDrop) {
+        const t = await tx.fusionToken.create({
+          data: {
+            userId,
+            kind: tokenDrop.kind,
+            rarity: tokenDrop.rarity,
+            key: tokenDrop.key,
+            expiresAt: tokenDrop.expiresAt,
+          },
+        });
+        createdToken = {
+          id: t.id,
+          kind: t.kind,
+          rarity: t.rarity,
+          key: t.key,
+          expiresAt: t.expiresAt,
+        };
+      }
+
       await tx.userMonster.update({
         where: { id: userMonsterId },
         data: { feedCountForHunt: 0 },
       });
 
-      return updatedHunt;
+      return { updatedHunt, createdToken };
     });
 
     return {
       ok: true,
       reward,
+      fusionToken: result.createdToken,
       hunt: {
-        status: result.status,
-        endsAt: result.endsAt,
+        status: result.updatedHunt.status,
+        endsAt: result.updatedHunt.endsAt,
       },
     };
   }
