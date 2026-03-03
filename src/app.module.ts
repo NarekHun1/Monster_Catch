@@ -18,6 +18,8 @@ import { RouletteModule } from './roulette/roulette.module';
 import { QuestsModule } from './quests/quests.module';
 import { MonstersModule } from './monsters/monsters.module';
 import { MarketModule } from './market/market.module';
+import { FusionModule } from './fusion/fusion.module';
+import { SummonModule } from './summon/summon.module';
 import { EventTournamentModule } from './event-tournamen/event-tournament.module';
 
 @Module({
@@ -42,6 +44,8 @@ import { EventTournamentModule } from './event-tournamen/event-tournament.module
     MonstersModule,
     MarketModule,
     EventTournamentModule,
+    FusionModule,
+    SummonModule,
   ],
 })
 export class AppModule {}
