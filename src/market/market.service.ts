@@ -154,30 +154,17 @@ export class MarketService {
         select: { marketUnlocked: true },
       });
       if (!u?.marketUnlocked) {
-        throw new ForbiddenException(
-          'Market locked. Need 200 coins to unlock.',
-        );
+        throw new ForbiddenException('Market locked. Need 200 coins to unlock.');
       }
 
       const um = await tx.userMonster.findUnique({
         where: { id: body.userMonsterId },
-        select: {
-          id: true,
-          userId: true,
-          monsterId: true,
-          count: true,
-          level: true,
-        },
+        select: { id: true, userId: true, monsterId: true, count: true, level: true },
       });
 
-      if (!um || um.userId !== userId)
-        throw new ForbiddenException('Monster not yours');
-      if (um.count <= 0)
-        throw new BadRequestException('You have 0 of this monster');
-      if (um.level < 5)
-        throw new ForbiddenException(
-          'Можно продавать только монстров 5 уровня',
-        );
+      if (!um || um.userId !== userId) throw new ForbiddenException('Monster not yours');
+      if (um.count <= 0) throw new BadRequestException('You have 0 of this monster');
+      if (um.level < 5) throw new ForbiddenException('Можно продавать только монстров 5 уровня');
 
       // ✅ должен стоять в слотах фермы
       const slot = await tx.farmSlot.findFirst({
@@ -185,9 +172,7 @@ export class MarketService {
         select: { id: true, slotIndex: true },
       });
       if (!slot) {
-        throw new BadRequestException(
-          'Можно продавать только монстров, которые стоят на Farm',
-        );
+        throw new BadRequestException('Можно продавать только монстров, которые стоят на Farm');
       }
 
       // ✅ нельзя если идёт охота
@@ -195,11 +180,7 @@ export class MarketService {
         where: { userMonsterId: um.id },
         select: { status: true, endsAt: true },
       });
-      if (
-        hunt &&
-        hunt.status === 'RUNNING' &&
-        hunt.endsAt.getTime() > Date.now()
-      ) {
+      if (hunt && hunt.status === 'RUNNING' && hunt.endsAt.getTime() > Date.now()) {
         throw new ForbiddenException('Monster is on hunt');
       }
 
@@ -233,8 +214,7 @@ export class MarketService {
     const buyerId = this.getUserId(authHeader);
     await this.ensureUnlocked(buyerId);
 
-    if (!listingId || listingId < 1)
-      throw new BadRequestException('listingId is required');
+    if (!listingId || listingId < 1) throw new BadRequestException('listingId is required');
 
     return this.prisma.$transaction(async (tx) => {
       // ✅ check unlocked in tx
@@ -243,9 +223,7 @@ export class MarketService {
         select: { marketUnlocked: true },
       });
       if (!buyerUnlock?.marketUnlocked) {
-        throw new ForbiddenException(
-          'Market locked. Need 200 coins to unlock.',
-        );
+        throw new ForbiddenException('Market locked. Need 200 coins to unlock.');
       }
 
       const listing = await tx.marketListing.findUnique({
@@ -280,11 +258,7 @@ export class MarketService {
         where: { id: listing.userMonsterId },
         select: { id: true, userId: true, count: true },
       });
-      if (
-        !sellerUM ||
-        sellerUM.userId !== listing.sellerId ||
-        sellerUM.count <= 0
-      ) {
+      if (!sellerUM || sellerUM.userId !== listing.sellerId || sellerUM.count <= 0) {
         throw new BadRequestException('Monster not available');
       }
 
@@ -294,8 +268,7 @@ export class MarketService {
           where: { id: buyerId },
           select: { coins: true },
         });
-        if (!buyer || buyer.coins < listing.price)
-          throw new ForbiddenException('Not enough coins');
+        if (!buyer || buyer.coins < listing.price) throw new ForbiddenException('Not enough coins');
 
         await tx.user.update({
           where: { id: buyerId },
@@ -310,8 +283,7 @@ export class MarketService {
           where: { id: buyerId },
           select: { stars: true },
         });
-        if (!buyer || buyer.stars < listing.price)
-          throw new ForbiddenException('Not enough stars');
+        if (!buyer || buyer.stars < listing.price) throw new ForbiddenException('Not enough stars');
 
         await tx.user.update({
           where: { id: buyerId },
@@ -330,9 +302,7 @@ export class MarketService {
       });
 
       await tx.userMonster.upsert({
-        where: {
-          userId_monsterId: { userId: buyerId, monsterId: listing.monsterId },
-        },
+        where: { userId_monsterId: { userId: buyerId, monsterId: listing.monsterId } },
         create: { userId: buyerId, monsterId: listing.monsterId, count: 1 },
         update: { count: { increment: 1 } },
       });
@@ -348,8 +318,7 @@ export class MarketService {
     const userId = this.getUserId(authHeader);
     await this.ensureUnlocked(userId);
 
-    if (!listingId || listingId < 1)
-      throw new BadRequestException('listingId is required');
+    if (!listingId || listingId < 1) throw new BadRequestException('listingId is required');
 
     return this.prisma.$transaction(async (tx) => {
       // ✅ check unlocked in tx
@@ -358,9 +327,7 @@ export class MarketService {
         select: { marketUnlocked: true },
       });
       if (!u?.marketUnlocked) {
-        throw new ForbiddenException(
-          'Market locked. Need 200 coins to unlock.',
-        );
+        throw new ForbiddenException('Market locked. Need 200 coins to unlock.');
       }
 
       const listing = await tx.marketListing.findUnique({
@@ -370,8 +337,7 @@ export class MarketService {
       if (!listing || listing.status !== 'ACTIVE') {
         throw new BadRequestException('Listing not active');
       }
-      if (listing.sellerId !== userId)
-        throw new ForbiddenException('Not yours');
+      if (listing.sellerId !== userId) throw new ForbiddenException('Not yours');
 
       await tx.marketListing.update({
         where: { id: listingId },
