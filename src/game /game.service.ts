@@ -50,29 +50,68 @@ export class GameService {
   }
 
   async getLeaderboard() {
-    const bestScores = await this.prisma.game.groupBy({
-      by: ['userId'],
-      _max: { score: true },
-      where: {
-        score: { gt: 0 },
-        finishedAt: { not: null },
-      },
-      orderBy: { _max: { score: 'desc' } },
-      take: 20,
-    });
+    const [gameBestScores, tournamentBestScores, users] = await Promise.all([
+      this.prisma.game.groupBy({
+        by: ['userId'],
+        _max: { score: true },
+        where: {
+          score: { gt: 0 },
+          finishedAt: { not: null },
+        },
+      }),
 
-    const users = await this.prisma.user.findMany({
-      where: { id: { in: bestScores.map((b) => b.userId) } },
-      select: { id: true, username: true, firstName: true },
-    });
+      this.prisma.tournamentParticipant.groupBy({
+        by: ['userId'],
+        _max: { score: true },
+        where: {
+          score: { gt: 0 },
+        },
+      }),
 
-    const map = new Map(users.map((u) => [u.id, u]));
+      this.prisma.user.findMany({
+        where: {
+          isBlocked: false,
+          isBot: false,
+        },
+        select: {
+          id: true,
+          username: true,
+          firstName: true,
+        },
+      }),
+    ]);
 
-    return bestScores.map((entry) => ({
-      id: entry.userId,
-      score: entry._max.score ?? 0,
-      user: map.get(entry.userId) ?? null,
-    }));
+    const userMap = new Map(users.map((u) => [u.id, u]));
+    const scoreMap = new Map<number, number>();
+
+    // 1) Best from regular games
+    for (const row of gameBestScores) {
+      const best = row._max.score ?? 0;
+      if (best > 0) {
+        scoreMap.set(row.userId, best);
+      }
+    }
+
+    // 2) Best from tournaments
+    for (const row of tournamentBestScores) {
+      const tournamentBest = row._max.score ?? 0;
+      const currentBest = scoreMap.get(row.userId) ?? 0;
+
+      if (tournamentBest > currentBest) {
+        scoreMap.set(row.userId, tournamentBest);
+      }
+    }
+
+    // 3) Build final leaderboard
+    return Array.from(scoreMap.entries())
+      .filter(([userId, score]) => score > 0 && userMap.has(userId))
+      .map(([userId, score]) => ({
+        id: userId,
+        score,
+        user: userMap.get(userId) ?? null,
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 20);
   }
 
   /** Начать игру */
