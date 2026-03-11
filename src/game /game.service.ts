@@ -314,9 +314,25 @@ export class GameService {
       throw new BadRequestException('Suspicious metrics (not counted)');
     }
 
-    // 5) server score (игнорируем client score)
-    const serverScore = clicksSafe + epicCountSafe * 10;
+    const minPossibleScore = clicksSafe; // если все были по 1
+    const maxPossibleScore = clicksSafe * 10; // если все были legendary по 10
 
+    if (scoreSafe < minPossibleScore || scoreSafe > maxPossibleScore) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: `score out of range: ${scoreSafe}, clicks=${clicksSafe}`,
+        payload: {
+          score: scoreSafe,
+          clicks: clicksSafe,
+          epicCount: epicCountSafe,
+          melasCount: melasCountSafe,
+        },
+      });
+      throw new BadRequestException('Invalid score range (not counted)');
+    }
+
+    const serverScore = scoreSafe;
     // 6) stars
     let starsEarned = Math.floor(serverScore / 12);
     starsEarned = Math.max(starsEarned, 3);
