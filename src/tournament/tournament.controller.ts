@@ -5,6 +5,8 @@ import {
   Body,
   Headers,
   Query,
+  Param,
+  ParseIntPipe,
   BadRequestException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -15,9 +17,6 @@ import { TournamentType } from '@prisma/client';
 export class TournamentController {
   constructor(private readonly service: TournamentService) {}
 
-  // ─────────────────────────────────────
-  // JWT helper
-  // ─────────────────────────────────────
   private extractToken(authHeader?: string): string {
     if (!authHeader) {
       throw new BadRequestException('Missing Authorization header');
@@ -31,10 +30,6 @@ export class TournamentController {
     return token;
   }
 
-  // ─────────────────────────────────────
-  // ТЕКУЩИЙ ТУРНИР + ЛИДЕРБОРД
-  // GET /tournament/current?type=HOURLY|DAILY
-  // ─────────────────────────────────────
   @Get('current')
   async current(
     @Query('type') type?: TournamentType,
@@ -50,11 +45,6 @@ export class TournamentController {
     return this.service.getCurrentTournament(type, token);
   }
 
-  // ─────────────────────────────────────
-  // ВСТУПЛЕНИЕ В ТУРНИР
-  // POST /tournament/join
-  // body: { type: "HOURLY" | "DAILY" }
-  // ─────────────────────────────────────
   @Post('join')
   join(
     @Headers('authorization') auth: string,
@@ -63,17 +53,14 @@ export class TournamentController {
     if (!auth) throw new UnauthorizedException('Missing Authorization header');
     const token = auth.replace('Bearer ', '');
 
-    // ✅ просто берем как есть
     const payWith = body.payWith;
 
-    // ✅ если CASH_CUP — payWith обязателен
     if (body.type === 'CASH_CUP' && !payWith) {
       throw new BadRequestException(
         'payWith is required for CASH_CUP (coins|tickets)',
       );
     }
 
-    // ✅ если payWith пришёл — провалидируем
     if (payWith && payWith !== 'tickets' && payWith !== 'coins') {
       throw new BadRequestException('payWith must be coins or tickets');
     }
@@ -81,11 +68,6 @@ export class TournamentController {
     return this.service.join(token, body.type, payWith);
   }
 
-  // ─────────────────────────────────────
-  // ОТПРАВКА СЧЁТА В ТУРНИР
-  // POST /tournament/submit-score
-  // body: { type: "HOURLY" | "DAILY", score: number }
-  // ─────────────────────────────────────
   @Post('submit-score')
   async submitScore(
     @Headers('authorization') auth?: string,
@@ -104,10 +86,15 @@ export class TournamentController {
     return this.service.submitScore(token, tournamentId, score);
   }
 
-  // ─────────────────────────────────────
-  // ЗАВЕРШЕНИЕ ТУРНИРОВ (cron / manual)
-  // POST /tournament/finish-expired
-  // ─────────────────────────────────────
+  @Post(':tournamentId/replay')
+  buyReplay(
+    @Param('tournamentId', ParseIntPipe) tournamentId: number,
+    @Headers('authorization') auth?: string,
+  ) {
+    const token = this.extractToken(auth);
+    return this.service.buyReplay(token, tournamentId);
+  }
+
   @Post('finish-expired')
   async finishExpired() {
     return this.service.finishExpiredTournaments();
