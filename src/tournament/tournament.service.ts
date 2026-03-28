@@ -41,6 +41,7 @@ export class TournamentService {
       throw new UnauthorizedException('Invalid token');
     }
   }
+
   private formatTournamentTitle(type: TournamentType) {
     if (type === 'HOURLY') return '⏱ HOURLY';
     if (type === 'DAILY') return '📅 DAILY';
@@ -80,6 +81,16 @@ export class TournamentService {
     await this.safeSendTelegramMessage(telegramId, text);
   }
 
+  // ───────────────── REPLAY HELPERS ─────────────────
+  private getReplayPrice(replayCount: number): number | null {
+    const prices = [10, 15, 20];
+    return prices[replayCount] ?? null;
+  }
+
+  private getAllowedAttempts(replayCount: number): number {
+    return 1 + replayCount;
+  }
+
   // ───────────────── TIME HELPERS ─────────────────
   private floorToHour(d: Date) {
     const x = new Date(d);
@@ -111,14 +122,15 @@ export class TournamentService {
       Math.floor(prizePool * 0.1),
     ];
   }
+
   // ───────────────── STANDARD (HOURLY / DAILY) PRIZES ─────────────────
   private calculateStandardPrizes(prizePool: number, count: number): number[] {
     if (count < 2) return [];
 
     return [
-      Math.floor(prizePool * 0.4), // 🥇 40%
-      Math.floor(prizePool * 0.2), // 🥈 20%
-      Math.floor(prizePool * 0.1), // 🥉 10%
+      Math.floor(prizePool * 0.4),
+      Math.floor(prizePool * 0.2),
+      Math.floor(prizePool * 0.1),
     ];
   }
 
@@ -132,14 +144,9 @@ export class TournamentService {
 
     if (type === 'HOURLY') {
       startsAt = this.floorToHour(now);
-
-      // ✅ длится 1 час
       endsAt = new Date(startsAt);
       endsAt.setHours(endsAt.getHours() + 1);
-
-      // ✅ вход весь час
       joinDeadline = new Date(endsAt);
-
       entryFee = 50;
     } else if (type === 'DAILY') {
       startsAt = this.floorToDay(now);
@@ -187,7 +194,6 @@ export class TournamentService {
       `[JOIN] request userId=${userId} type=${type} payWith=${payWith}`,
     );
 
-    // CASH_CUP: payWith обязателен
     if (type === 'CASH_CUP' && !payWith) {
       this.logger.warn(
         `[JOIN][ERROR] CASH_CUP without payWith userId=${userId}`,
@@ -269,7 +275,13 @@ export class TournamentService {
             });
 
             await tx.tournamentParticipant.create({
-              data: { userId, tournamentId: tournament.id, payWith: method },
+              data: {
+                userId,
+                tournamentId: tournament.id,
+                payWith: method,
+                replayCount: 0,
+                usedAttempts: 0,
+              },
             });
 
             this.logger.log(
@@ -283,7 +295,6 @@ export class TournamentService {
             };
           }
 
-          // coins
           const u = await tx.user.findUnique({
             where: { id: userId },
             select: { coins: true },
@@ -311,7 +322,13 @@ export class TournamentService {
           });
 
           await tx.tournamentParticipant.create({
-            data: { userId, tournamentId: tournament.id, payWith: method },
+            data: {
+              userId,
+              tournamentId: tournament.id,
+              payWith: method,
+              replayCount: 0,
+              usedAttempts: 0,
+            },
           });
 
           this.logger.log(
@@ -367,7 +384,13 @@ export class TournamentService {
           });
 
           await tx.tournamentParticipant.create({
-            data: { userId, tournamentId: tournament.id, payWith: method },
+            data: {
+              userId,
+              tournamentId: tournament.id,
+              payWith: method,
+              replayCount: 0,
+              usedAttempts: 0,
+            },
           });
 
           this.logger.log(
@@ -401,7 +424,13 @@ export class TournamentService {
         });
 
         await tx.tournamentParticipant.create({
-          data: { userId, tournamentId: tournament.id, payWith: method },
+          data: {
+            userId,
+            tournamentId: tournament.id,
+            payWith: method,
+            replayCount: 0,
+            usedAttempts: 0,
+          },
         });
 
         this.logger.log(
@@ -411,7 +440,6 @@ export class TournamentService {
         return { joined: true, tournamentId: tournament.id, via: 'coins' };
       });
     } catch (e: any) {
-      // защита от гонки
       if (e?.code === 'P2002') {
         this.logger.warn(
           `[JOIN][RACE] participant already exists userId=${userId}`,
@@ -424,6 +452,75 @@ export class TournamentService {
       );
       throw e;
     }
+  }
+
+  // ───────────────── BUY REPLAY ─────────────────
+  async buyReplay(token: string, tournamentId: number) {
+    const userId = this.getUserIdFromToken(token);
+
+    return this.prisma.$transaction(async (tx) => {
+      const tournament = await tx.tournament.findUnique({
+        where: { id: tournamentId },
+      });
+
+      if (
+        !tournament ||
+        tournament.status !== 'ACTIVE' ||
+        new Date() > tournament.endsAt
+      ) {
+        throw new BadRequestException('Tournament is not active');
+      }
+
+      const participant = await tx.tournamentParticipant.findUnique({
+        where: {
+          userId_tournamentId: { userId, tournamentId },
+        },
+      });
+
+      if (!participant) {
+        throw new BadRequestException('Join tournament first');
+      }
+
+      const replayPrice = this.getReplayPrice(participant.replayCount);
+
+      if (replayPrice === null) {
+        throw new BadRequestException('Replay limit reached');
+      }
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { coins: true },
+      });
+
+      if (!user || user.coins < replayPrice) {
+        throw new BadRequestException(`Need ${replayPrice} coins`);
+      }
+
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          coins: { decrement: replayPrice },
+        },
+      });
+
+      await tx.tournamentParticipant.update({
+        where: { id: participant.id },
+        data: {
+          replayCount: { increment: 1 },
+        },
+      });
+
+      return {
+        success: true,
+        replayPrice,
+        replayCountAfterBuy: participant.replayCount + 1,
+        usedAttempts: participant.usedAttempts,
+        attemptsLeft:
+          this.getAllowedAttempts(participant.replayCount + 1) -
+          participant.usedAttempts,
+        remainingCoins: user.coins - replayPrice,
+      };
+    });
   }
 
   // ───────────────── SUBMIT SCORE ─────────────────
@@ -442,20 +539,53 @@ export class TournamentService {
       return { updated: false };
     }
 
-    const p = await this.prisma.tournamentParticipant.findUnique({
-      where: {
-        userId_tournamentId: { userId, tournamentId },
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const p = await tx.tournamentParticipant.findUnique({
+        where: {
+          userId_tournamentId: { userId, tournamentId },
+        },
+      });
+
+      if (!p) {
+        return { updated: false };
+      }
+
+      const allowedAttempts = this.getAllowedAttempts(p.replayCount);
+
+      if (p.usedAttempts >= allowedAttempts) {
+        return {
+          updated: false,
+          reason: 'NO_ATTEMPTS_LEFT',
+          replayCount: p.replayCount,
+          usedAttempts: p.usedAttempts,
+          attemptsLeft: 0,
+          nextReplayPrice: this.getReplayPrice(p.replayCount),
+        };
+      }
+
+      const improved = score > p.score;
+      const nextUsedAttempts = p.usedAttempts + 1;
+      const attemptsLeft = Math.max(0, allowedAttempts - nextUsedAttempts);
+
+      await tx.tournamentParticipant.update({
+        where: { id: p.id },
+        data: {
+          usedAttempts: { increment: 1 },
+          ...(improved ? { score } : {}),
+        },
+      });
+
+      return {
+        updated: true,
+        improved,
+        previousScore: p.score,
+        newScore: improved ? score : p.score,
+        replayCount: p.replayCount,
+        usedAttempts: nextUsedAttempts,
+        attemptsLeft,
+        nextReplayPrice: this.getReplayPrice(p.replayCount),
+      };
     });
-
-    if (!p || p.score !== 0) return { updated: false };
-
-    await this.prisma.tournamentParticipant.update({
-      where: { id: p.id },
-      data: { score },
-    });
-
-    return { updated: true };
   }
 
   // ───────────────── FINISH ─────────────────
@@ -472,18 +602,18 @@ export class TournamentService {
 
     for (const t of tournaments) {
       const sorted = [...t.participants].sort((a, b) => b.score - a.score);
+
       // ───────────── 1 PLAYER → REFUND (same payWith) ─────────────
       if (sorted.length === 1) {
         const p = sorted[0];
         const payWith = (p as any).payWith as 'coins' | 'tickets' | undefined;
-
         const fee = t.entryFee;
 
         if (payWith === 'tickets') {
           await this.prisma.ticket.createMany({
             data: Array.from({ length: fee }, () => ({
               userId: p.userId,
-              type: 'TOURNAMENT', // ✅ у тебя есть в enum TicketType
+              type: 'TOURNAMENT',
             })),
           });
         } else {
@@ -507,7 +637,7 @@ export class TournamentService {
 
         continue;
       }
-      // призы как у тебя
+
       let prizes: number[] = [];
 
       if (t.type === 'CASH_CUP') {
@@ -516,7 +646,6 @@ export class TournamentService {
         prizes = this.calculateStandardPrizes(t.prizePool, sorted.length);
       }
 
-      // начислить + закрыть
       const tx: Prisma.PrismaPromise<any>[] = [];
 
       sorted.slice(0, prizes.length).forEach((p, i) => {
@@ -537,7 +666,6 @@ export class TournamentService {
 
       await this.prisma.$transaction(tx);
 
-      // ✅ уведомить топ-3 (только тем, у кого есть telegramId)
       const top = sorted.slice(0, Math.min(3, prizes.length));
       for (let i = 0; i < top.length; i++) {
         const tg = top[i].user?.telegramId;
@@ -564,18 +692,37 @@ export class TournamentService {
     let ticketsCount = 0;
     let userId: number | null = null;
 
+    let replayCount = 0;
+    let usedAttempts = 0;
+    let attemptsLeft = 0;
+    let nextReplayPrice: number | null = null;
+    let bestScore = 0;
+
     if (token) {
       try {
         userId = this.getUserIdFromToken(token);
 
-        joined = !!(await this.prisma.tournamentParticipant.findUnique({
+        const participant = await this.prisma.tournamentParticipant.findUnique({
           where: {
             userId_tournamentId: {
               userId,
               tournamentId: tournament.id,
             },
           },
-        }));
+        });
+
+        joined = !!participant;
+
+        if (participant) {
+          replayCount = participant.replayCount ?? 0;
+          usedAttempts = participant.usedAttempts ?? 0;
+          bestScore = participant.score ?? 0;
+          attemptsLeft = Math.max(
+            0,
+            this.getAllowedAttempts(replayCount) - usedAttempts,
+          );
+          nextReplayPrice = this.getReplayPrice(replayCount);
+        }
 
         const user = await this.prisma.user.findUnique({
           where: { id: userId },
@@ -596,10 +743,9 @@ export class TournamentService {
       orderBy: { score: 'desc' },
       take: 20,
     });
+
     const now = new Date();
-
     const timeLeftMs = Math.max(0, tournament.endsAt.getTime() - now.getTime());
-
     const joinLeftMs = Math.max(
       0,
       tournament.joinDeadline.getTime() - now.getTime(),
@@ -623,6 +769,12 @@ export class TournamentService {
       joined,
       coins,
       ticketsCount,
+
+      replayCount,
+      usedAttempts,
+      attemptsLeft,
+      nextReplayPrice,
+      bestScore,
 
       participants: participants.map((p) => ({
         userId: p.userId,

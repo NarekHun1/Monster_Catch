@@ -152,8 +152,10 @@ model TournamentParticipant {
   score        Int      @default(0)
   createdAt    DateTime @default(now())
 
-  // ✅ было String, делаем enum
   payWith PayWith @default(coins)
+
+  replayCount  Int @default(0)
+  usedAttempts Int @default(0)
 
   tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
   user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
