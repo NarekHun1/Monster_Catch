@@ -54,6 +54,7 @@ export class PresenceService {
 
   async findOnlineCandidate(excludeUserId: number, tournamentId: number) {
     const onlineSince = new Date(Date.now() - 45_000);
+    const now = new Date();
 
     const presences = await this.prisma.onlinePresence.findMany({
       where: {
@@ -64,7 +65,7 @@ export class PresenceService {
       orderBy: {
         lastActiveAt: 'desc',
       },
-      take: 30,
+      take: 50,
     });
 
     if (!presences.length) return null;
@@ -84,15 +85,37 @@ export class PresenceService {
       alreadyInTournament.map((x) => x.userId),
     );
 
-    const filtered = presences.filter(
-      (x) => !alreadyInTournamentSet.has(x.userId),
-    );
+    const pendingInvites = await this.prisma.tournamentInvite.findMany({
+      where: {
+        status: 'PENDING',
+        expiresAt: { gt: now },
+        OR: [
+          { fromUserId: { in: candidateIds } },
+          { toUserId: { in: candidateIds } },
+        ],
+      },
+      select: {
+        fromUserId: true,
+        toUserId: true,
+      },
+    });
+
+    const busyUserSet = new Set<number>();
+    for (const inv of pendingInvites) {
+      busyUserSet.add(inv.fromUserId);
+      busyUserSet.add(inv.toUserId);
+    }
+
+    const filtered = presences.filter((x) => {
+      if (alreadyInTournamentSet.has(x.userId)) return false;
+      if (busyUserSet.has(x.userId)) return false;
+      return true;
+    });
 
     if (!filtered.length) return null;
 
     return filtered[Math.floor(Math.random() * filtered.length)];
   }
-
   async getOnlineCount() {
     const onlineSince = new Date(Date.now() - 45_000);
 
