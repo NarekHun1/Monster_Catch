@@ -11,6 +11,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectBot } from 'nestjs-telegraf';
 import { Telegraf } from 'telegraf';
 import { Prisma } from '@prisma/client';
+import { PresenceService } from '../presence/presence.service';
 
 interface JwtPayload {
   userId: number;
@@ -25,9 +26,85 @@ export class TournamentService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly presenceService: PresenceService,
     @InjectBot() private readonly bot: Telegraf,
   ) {}
 
+  async inviteOnline(token: string, tournamentId: number) {
+    const userId = this.getUserIdFromToken(token);
+
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { id: tournamentId },
+    });
+
+    if (!tournament) {
+      throw new BadRequestException('Tournament not found');
+    }
+
+    if (tournament.status !== 'ACTIVE' || new Date() > tournament.endsAt) {
+      throw new BadRequestException('Tournament is not active');
+    }
+
+    const participant = await this.prisma.tournamentParticipant.findUnique({
+      where: {
+        userId_tournamentId: {
+          userId,
+          tournamentId,
+        },
+      },
+    });
+
+    if (!participant) {
+      throw new BadRequestException('Join tournament first');
+    }
+
+    const existingPending = await this.prisma.tournamentInvite.findFirst({
+      where: {
+        tournamentId,
+        fromUserId: userId,
+        status: 'PENDING',
+        expiresAt: { gt: new Date() },
+      },
+    });
+
+    if (existingPending) {
+      return {
+        success: true,
+        inviteId: existingPending.id,
+        toUserId: existingPending.toUserId,
+        expiresAt: existingPending.expiresAt,
+      };
+    }
+
+    const candidate = await this.presenceService.findOnlineCandidate(
+      userId,
+      tournamentId,
+    );
+
+    if (!candidate) {
+      return {
+        success: false,
+        reason: 'NO_ONLINE_PLAYERS',
+      };
+    }
+
+    const invite = await this.prisma.tournamentInvite.create({
+      data: {
+        tournamentId,
+        fromUserId: userId,
+        toUserId: candidate.userId,
+        status: 'PENDING',
+        expiresAt: new Date(Date.now() + 30_000),
+      },
+    });
+
+    return {
+      success: true,
+      inviteId: invite.id,
+      toUserId: invite.toUserId,
+      expiresAt: invite.expiresAt,
+    };
+  }
   // ───────────────── AUTH ─────────────────
   private getUserIdFromToken(token: string): number {
     if (!token) throw new UnauthorizedException('Token missing');

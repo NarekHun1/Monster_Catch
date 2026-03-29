@@ -68,6 +68,14 @@ export class TournamentController {
     return this.service.join(token, body.type, payWith);
   }
 
+  @Post(':id/invite-online')
+  inviteOnline(
+    @Param('id') id: string,
+    @Headers('authorization') authorization: string,
+  ) {
+    return this.service.inviteOnline(authorization, Number(id));
+  }
+
   @Post('submit-score')
   async submitScore(
     @Headers('authorization') auth?: string,

@@ -22,7 +22,8 @@ export class PresenceController {
   ) {}
 
   private getUserIdFromAuthHeader(authHeader?: string): number {
-    if (!authHeader) throw new UnauthorizedException('Authorization header missing');
+    if (!authHeader)
+      throw new UnauthorizedException('Authorization header missing');
 
     const token = authHeader.startsWith('Bearer ')
       ? authHeader.slice(7)
@@ -48,11 +49,7 @@ export class PresenceController {
   ) {
     const userId = this.getUserIdFromAuthHeader(authorization);
 
-    await this.presenceService.ping(
-      userId,
-      dto.screen,
-      dto.inGame ?? false,
-    );
+    await this.presenceService.ping(userId, dto.screen, dto.inGame ?? false);
 
     return {
       success: true,
