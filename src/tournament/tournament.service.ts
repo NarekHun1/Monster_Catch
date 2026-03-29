@@ -3,6 +3,8 @@ import {
   Injectable,
   UnauthorizedException,
   Logger,
+  NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
@@ -113,7 +115,165 @@ export class TournamentService {
       toUserId: invite.toUserId,
       expiresAt: invite.expiresAt,
     };
-  }  // ───────────────── AUTH ─────────────────
+  }
+
+  async acceptInvite(
+    token: string,
+    inviteId: number,
+    payWith: 'coins' | 'tickets',
+  ) {
+    const userId = this.getUserIdFromToken(token);
+
+    return this.prisma.$transaction(async (tx) => {
+      const invite = await tx.tournamentInvite.findFirst({
+        where: {
+          id: inviteId,
+          toUserId: userId,
+          status: 'PENDING',
+          expiresAt: { gt: new Date() },
+        },
+      });
+
+      if (!invite) {
+        throw new BadRequestException('Invite not found or expired');
+      }
+
+      const tournament = await tx.tournament.findUnique({
+        where: { id: invite.tournamentId },
+      });
+
+      if (!tournament) {
+        throw new BadRequestException('Tournament not found');
+      }
+
+      if (tournament.status !== 'ACTIVE' || new Date() > tournament.endsAt) {
+        throw new BadRequestException('Tournament is not active');
+      }
+
+      const existingParticipant = await tx.tournamentParticipant.findUnique({
+        where: {
+          userId_tournamentId: {
+            userId,
+            tournamentId: invite.tournamentId,
+          },
+        },
+      });
+
+      if (existingParticipant) {
+        await tx.tournamentInvite.update({
+          where: { id: invite.id },
+          data: { status: 'ACCEPTED' },
+        });
+
+        return {
+          success: true,
+          tournamentId: invite.tournamentId,
+          alreadyJoined: true,
+        };
+      }
+
+      const required =
+        tournament.type === 'CASH_CUP'
+          ? 10
+          : tournament.type === 'HOURLY'
+            ? 50
+            : 100;
+
+      if (payWith === 'tickets') {
+        const tickets = await tx.ticket.findMany({
+          where: { userId, usedAt: null },
+          orderBy: { createdAt: 'asc' },
+          take: required,
+        });
+
+        if (tickets.length < required) {
+          throw new BadRequestException(`Need ${required} tickets`);
+        }
+
+        for (const t of tickets) {
+          await tx.ticket.update({
+            where: { id: t.id },
+            data: { usedAt: new Date() },
+          });
+        }
+      } else {
+        const user = await tx.user.findUnique({
+          where: { id: userId },
+          select: { coins: true },
+        });
+
+        if (!user || user.coins < required) {
+          throw new BadRequestException(`Need ${required} coins`);
+        }
+
+        await tx.user.update({
+          where: { id: userId },
+          data: {
+            coins: { decrement: required },
+          },
+        });
+      }
+
+      await tx.tournament.update({
+        where: { id: tournament.id },
+        data: { prizePool: { increment: required } },
+      });
+
+      await tx.tournamentParticipant.create({
+        data: {
+          userId,
+          tournamentId: tournament.id,
+          payWith,
+          replayCount: 0,
+          usedAttempts: 0,
+        },
+      });
+
+      await tx.tournamentInvite.update({
+        where: { id: invite.id },
+        data: { status: 'ACCEPTED' },
+      });
+
+      return {
+        success: true,
+        tournamentId: tournament.id,
+        payWith,
+        joined: true,
+      };
+    });
+  }
+
+  async declineInvite(token: string, inviteId: number) {
+    const userId = this.getUserIdFromToken(token);
+
+    const invite = await this.prisma.tournamentInvite.findUnique({
+      where: { id: inviteId },
+    });
+
+    if (!invite) {
+      throw new NotFoundException('Invite not found');
+    }
+
+    if (invite.toUserId !== userId) {
+      throw new ForbiddenException('This invite is not for you');
+    }
+
+    if (invite.status !== 'PENDING') {
+      throw new BadRequestException('Invite already handled');
+    }
+
+    await this.prisma.tournamentInvite.update({
+      where: { id: inviteId },
+      data: {
+        status: 'DECLINED',
+      },
+    });
+
+    return {
+      success: true,
+    };
+  }
+  // ───────────────── AUTH ─────────────────
   private getUserIdFromToken(token: string): number {
     if (!token) throw new UnauthorizedException('Token missing');
 

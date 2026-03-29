@@ -76,6 +76,32 @@ export class TournamentController {
     return this.service.inviteOnline(authorization, Number(id));
   }
 
+  @Post('invite/:inviteId/accept')
+  acceptInvite(
+    @Param('inviteId') inviteId: string,
+    @Headers('authorization') authorization?: string,
+    @Body() dto?: { payWith: 'coins' | 'tickets' },
+  ) {
+    const token = this.extractToken(authorization);
+
+    if (dto?.payWith && dto.payWith !== 'coins' && dto.payWith !== 'tickets') {
+      throw new BadRequestException('payWith must be coins or tickets');
+    }
+
+    return this.service.acceptInvite(
+      token,
+      Number(inviteId),
+      dto?.payWith || 'coins',
+    );
+  }
+  @Post('invite/:inviteId/decline')
+  declineInvite(
+    @Param('inviteId') inviteId: string,
+    @Headers('authorization') auth?: string,
+  ) {
+    const token = this.extractToken(auth);
+    return this.service.declineInvite(token, Number(inviteId));
+  }
   @Post('submit-score')
   async submitScore(
     @Headers('authorization') auth?: string,
