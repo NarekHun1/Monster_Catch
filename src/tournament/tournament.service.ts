@@ -58,6 +58,7 @@ export class TournamentService {
       throw new BadRequestException('Join tournament first');
     }
 
+    // если уже есть живой pending invite от этого игрока — возвращаем его
     const existingPending = await this.prisma.tournamentInvite.findFirst({
       where: {
         tournamentId,
@@ -65,6 +66,7 @@ export class TournamentService {
         status: 'PENDING',
         expiresAt: { gt: new Date() },
       },
+      orderBy: { createdAt: 'desc' },
     });
 
     if (existingPending) {
@@ -76,15 +78,44 @@ export class TournamentService {
       };
     }
 
-    const candidate = await this.presenceService.findOnlineCandidate(
-      userId,
-      tournamentId,
-    );
+    let candidate: { userId: number } | null = null;
+
+    // 3 быстрые попытки найти онлайн игрока
+    for (let i = 0; i < 3; i++) {
+      candidate = await this.presenceService.findOnlineCandidate(
+        userId,
+        tournamentId,
+      );
+
+      if (candidate) break;
+
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    }
 
     if (!candidate) {
       return {
         success: false,
         reason: 'NO_ONLINE_PLAYERS',
+      };
+    }
+
+    // защита: не создавать дубликат invite на того же игрока
+    const duplicateInvite = await this.prisma.tournamentInvite.findFirst({
+      where: {
+        tournamentId,
+        fromUserId: userId,
+        toUserId: candidate.userId,
+        status: 'PENDING',
+        expiresAt: { gt: new Date() },
+      },
+    });
+
+    if (duplicateInvite) {
+      return {
+        success: true,
+        inviteId: duplicateInvite.id,
+        toUserId: duplicateInvite.toUserId,
+        expiresAt: duplicateInvite.expiresAt,
       };
     }
 
