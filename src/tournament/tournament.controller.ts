@@ -128,7 +128,11 @@ export class TournamentController {
     const token = this.extractToken(auth);
     return this.service.buyReplay(token, tournamentId);
   }
-
+  @Get('invite/pending')
+  pendingInvite(@Headers('authorization') auth?: string) {
+    const token = this.extractToken(auth);
+    return this.service.getPendingInvite(token);
+  }
   @Post('finish-expired')
   async finishExpired() {
     return this.service.finishExpiredTournaments();

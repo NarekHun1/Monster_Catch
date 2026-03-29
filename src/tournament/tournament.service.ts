@@ -116,7 +116,20 @@ export class TournamentService {
       expiresAt: invite.expiresAt,
     };
   }
+  async getPendingInvite(token: string) {
+    const userId = this.getUserIdFromToken(token);
 
+    const invite = await this.prisma.tournamentInvite.findFirst({
+      where: {
+        toUserId: userId,
+        status: 'PENDING',
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return { invite: invite ?? null };
+  }
   async acceptInvite(
     token: string,
     inviteId: number,
