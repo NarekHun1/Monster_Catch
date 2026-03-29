@@ -19,6 +19,7 @@ import { QuestsModule } from './quests/quests.module';
 import { MonstersModule } from './monsters/monsters.module';
 import { MarketModule } from './market/market.module';
 import { EventTournamentModule } from './event-tournamen/event-tournament.module';
+import { PresenceModule } from './presence/presence.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { EventTournamentModule } from './event-tournamen/event-tournament.module
     MonstersModule,
     MarketModule,
     EventTournamentModule,
+    PresenceModule,
   ],
 })
 export class AppModule {}

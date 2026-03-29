@@ -54,18 +54,21 @@ model User {
   marketPurchases MarketListing[] @relation("MarketBuyer")
 
   // relations
-  games             Game[]
-  payments          Payment[]
-  referralsReceived Referral[]              @relation("UserInvited")
-  referralsSent     Referral[]              @relation("UserInviter")
-  tournaments       TournamentParticipant[]
-  withdrawals       Withdrawal[]
-  Ticket            Ticket[]
-  StarExchange      StarExchange[]
-  UserQuest         UserQuest[]
-  UserMonster       UserMonster[]
-  FarmSlot          FarmSlot[]
-  MonsterHunt       MonsterHunt[]
+  games                     Game[]
+  payments                  Payment[]
+  referralsReceived         Referral[]              @relation("UserInvited")
+  referralsSent             Referral[]              @relation("UserInviter")
+  tournaments               TournamentParticipant[]
+  withdrawals               Withdrawal[]
+  Ticket                    Ticket[]
+  StarExchange              StarExchange[]
+  UserQuest                 UserQuest[]
+  UserMonster               UserMonster[]
+  FarmSlot                  FarmSlot[]
+  MonsterHunt               MonsterHunt[]
+  OnlinePresence            OnlinePresence[]
+  sentTournamentInvites     TournamentInvite[]      @relation("TournamentInviteFromUser")
+  receivedTournamentInvites TournamentInvite[]      @relation("TournamentInviteToUser")
 
   @@index([lastSeenAt])
   @@index([createdAt])
@@ -73,6 +76,20 @@ model User {
   @@index([isBot])
   @@index([telegramBlocked])
   @@index([telegramBlockedAt])
+}
+
+model OnlinePresence {
+  userId       Int      @id
+  lastActiveAt DateTime @default(now())
+  screen       String?
+  inGame       Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([lastActiveAt])
+  @@index([inGame, lastActiveAt])
 }
 
 model UserBlockLog {
@@ -140,6 +157,7 @@ model Tournament {
   createdAt    DateTime         @default(now())
 
   participants TournamentParticipant[]
+  invites      TournamentInvite[]
 
   @@index([type, status, startsAt])
   @@index([status, endsAt])
@@ -163,6 +181,27 @@ model TournamentParticipant {
   @@unique([userId, tournamentId])
   @@index([tournamentId, score])
   @@index([userId, createdAt])
+}
+
+model TournamentInvite {
+  id           Int          @id @default(autoincrement())
+  tournamentId Int
+  fromUserId   Int
+  toUserId     Int
+  status       InviteStatus @default(PENDING)
+  payWith      PayWith?
+  createdAt    DateTime     @default(now())
+  expiresAt    DateTime
+  respondedAt  DateTime?
+
+  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  fromUser   User       @relation("TournamentInviteFromUser", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser     User       @relation("TournamentInviteToUser", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@index([toUserId, status, expiresAt])
+  @@index([fromUserId, createdAt])
+  @@index([tournamentId, status])
+  @@index([status, expiresAt])
 }
 
 model Payment {
@@ -452,4 +491,12 @@ enum MarketStatus {
 enum MarketCurrency {
   COINS
   STARS
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  CANCELED
 }
