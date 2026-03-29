@@ -108,13 +108,20 @@ export class TournamentService {
   // ───────────────── AUTH ─────────────────
   private getUserIdFromToken(token: string): number {
     if (!token) throw new UnauthorizedException('Token missing');
+
     const secret = this.config.get<string>('JWT_SECRET');
     if (!secret) throw new UnauthorizedException('JWT secret missing');
 
+    // 🔥 ВОТ ЭТО ГЛАВНОЕ
+    const cleanToken = token.startsWith('Bearer ')
+      ? token.slice(7).trim()
+      : token.trim();
+
     try {
-      const payload = jwt.verify(token, secret) as JwtPayload;
+      const payload = jwt.verify(cleanToken, secret) as JwtPayload;
       return payload.userId;
-    } catch {
+    } catch (e) {
+      this.logger.warn(`JWT error: ${String(e)}`);
       throw new UnauthorizedException('Invalid token');
     }
   }
