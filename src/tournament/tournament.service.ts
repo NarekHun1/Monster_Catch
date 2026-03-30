@@ -126,9 +126,36 @@ export class TournamentService {
         expiresAt: { gt: new Date() },
       },
       orderBy: { createdAt: 'desc' },
+      include: {
+        tournament: {
+          select: {
+            id: true,
+            type: true,
+          },
+        },
+        fromUser: {
+          select: {
+            username: true,
+            firstName: true,
+          },
+        },
+      },
     });
 
-    return { invite: invite ?? null };
+    return {
+      invite: invite
+        ? {
+            id: invite.id,
+            tournamentId: invite.tournamentId,
+            expiresAt: invite.expiresAt,
+            fromUserId: invite.fromUserId,
+            toUserId: invite.toUserId,
+            tournamentType: invite.tournament?.type ?? null,
+            fromUsername:
+              invite.fromUser?.username ?? invite.fromUser?.firstName ?? null,
+          }
+        : null,
+    };
   }
   async acceptInvite(
     token: string,
