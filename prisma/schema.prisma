@@ -117,13 +117,53 @@ model Game {
   score      Int?
   createdAt  DateTime  @default(now())
   finishedAt DateTime?
-  clicks     Int?      @default(0)
-  epicCount  Int?      @default(0)
-  melasCount Int?      @default(0)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clicks     Int? @default(0)
+  epicCount  Int? @default(0)
+  melasCount Int? @default(0)
+
+  emptyClicks Int @default(0)
+
+  hitRate       Float @default(0)
+  avgIntervalMs Float @default(0)
+  intervalStdMs Float @default(0)
+
+  avgReactionMs     Float?
+  reactionStdMs     Float?
+  fastestReactionMs Int?
+  longestHitStreak  Int    @default(0)
+
+  invalidated      Boolean  @default(false)
+  invalidReason    String?
+  suspicionScore   Int      @default(0)
+  suspicionReasons String[]
+
+  user    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  GameTap GameTap[]
 
   @@index([userId, createdAt])
+  @@index([finishedAt])
+  @@index([invalidated])
+  @@index([userId, invalidated])
+}
+
+model GameTap {
+  id     Int @id @default(autoincrement())
+  gameId Int
+
+  atMs Int
+  x    Float
+  y    Float
+  hit  Boolean
+
+  targetType  String?
+  spawnedAtMs Int?
+
+  createdAt DateTime @default(now())
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@index([gameId])
 }
 
 model Referral {

@@ -14,6 +14,48 @@ interface JwtPayload {
   userId: number;
 }
 
+type RawTap = {
+  at?: number;
+  x?: number;
+  y?: number;
+  hit?: boolean;
+  targetType?: string | null;
+  spawnedAt?: number | null;
+};
+
+type NormalizedTap = {
+  at: number;
+  x: number;
+  y: number;
+  hit: boolean;
+  targetType: string | null;
+  spawnedAt: number | null;
+};
+
+type TapMetrics = {
+  totalClicks: number;
+  hits: number;
+  emptyClicks: number;
+  epicHits: number;
+  melasHits: number;
+  commonHits: number;
+  hitRate: number;
+
+  avgIntervalMs: number;
+  intervalStdMs: number;
+
+  avgReactionMs: number | null;
+  reactionStdMs: number | null;
+  fastestReactionMs: number | null;
+
+  longestHitStreak: number;
+};
+
+type SuspicionResult = {
+  suspicionScore: number;
+  reasons: string[];
+};
+
 @Injectable()
 export class GameService {
   constructor(
@@ -22,27 +64,29 @@ export class GameService {
     private readonly notificationService: NotificationService,
   ) {}
 
-  // ⚠️ Оставляем ТОЛЬКО для ручного админского бана (не для античита)
+  // Только для ручного админского бана
   private async blockUser(userId: number, reason: string) {
     await this.prisma.user.update({
       where: { id: userId },
       data: { isBlocked: true },
     });
+
     console.log('🚨 USER BLOCKED (manual/admin):', { userId, reason });
   }
 
-  /** Достаём userId из JWT-токена */
   private getUserIdFromToken(token: string): number {
     if (!token) throw new UnauthorizedException('Token is missing');
 
     const secret = this.config.get<string>('JWT_SECRET');
-    if (!secret)
+    if (!secret) {
       throw new UnauthorizedException('JWT_SECRET is not configured');
+    }
 
     try {
       const payload = jwt.verify(token, secret) as JwtPayload;
-      if (!payload.userId)
+      if (!payload.userId) {
         throw new UnauthorizedException('Token payload has no userId');
+      }
       return payload.userId;
     } catch {
       throw new UnauthorizedException('Invalid or expired token');
@@ -57,6 +101,7 @@ export class GameService {
         where: {
           score: { gt: 0 },
           finishedAt: { not: null },
+          invalidated: false,
         },
       }),
 
@@ -84,15 +129,11 @@ export class GameService {
     const userMap = new Map(users.map((u) => [u.id, u]));
     const scoreMap = new Map<number, number>();
 
-    // 1) Best from regular games
     for (const row of gameBestScores) {
       const best = row._max.score ?? 0;
-      if (best > 0) {
-        scoreMap.set(row.userId, best);
-      }
+      if (best > 0) scoreMap.set(row.userId, best);
     }
 
-    // 2) Best from tournaments
     for (const row of tournamentBestScores) {
       const tournamentBest = row._max.score ?? 0;
       const currentBest = scoreMap.get(row.userId) ?? 0;
@@ -102,7 +143,6 @@ export class GameService {
       }
     }
 
-    // 3) Build final leaderboard
     return Array.from(scoreMap.entries())
       .filter(([userId, score]) => score > 0 && userMap.has(userId))
       .map(([userId, score]) => ({
@@ -114,7 +154,6 @@ export class GameService {
       .slice(0, 20);
   }
 
-  /** Начать игру */
   async startGame(token: string) {
     const userId = this.getUserIdFromToken(token);
 
@@ -122,50 +161,319 @@ export class GameService {
       where: { id: userId },
       select: { id: true, isBlocked: true, extraTimeLevel: true },
     });
+
     if (!user) throw new UnauthorizedException('User not found');
     if (user.isBlocked) throw new ForbiddenException('User is blocked');
 
-    const baseDurationMs = 60_000; // 60 секунд
-    const extraPerLevelMs = 5_000; // +5 секунд за уровень extra_time
+    const baseDurationMs = 60_000;
+    const extraPerLevelMs = 5_000;
     const extraTimeMs = (user.extraTimeLevel ?? 0) * extraPerLevelMs;
     const roundDurationMs = baseDurationMs + extraTimeMs;
 
     const game = await this.prisma.game.create({
-      data: { userId },
+      data: {
+        userId,
+        emptyClicks: 0,
+        hitRate: 0,
+        avgIntervalMs: 0,
+        intervalStdMs: 0,
+        avgReactionMs: null,
+        reactionStdMs: null,
+        fastestReactionMs: null,
+        longestHitStreak: 0,
+        invalidated: false,
+        invalidReason: null,
+        suspicionScore: 0,
+        suspicionReasons: [],
+      },
     });
 
     return { gameId: game.id, roundDurationMs };
   }
 
-  // ✅ единая функция: “игру не засчитываем”, закрываем, без наград
+  private avg(nums: number[]): number {
+    if (!nums.length) return 0;
+    return nums.reduce((sum, n) => sum + n, 0) / nums.length;
+  }
+
+  private std(nums: number[]): number {
+    if (!nums.length) return 0;
+    const mean = this.avg(nums);
+    const variance =
+      nums.reduce((sum, n) => sum + (n - mean) ** 2, 0) / nums.length;
+    return Math.sqrt(variance);
+  }
+
+  private normalizeTaps(
+    rawTaps: RawTap[],
+    roundDurationMs: number,
+  ): NormalizedTap[] {
+    if (!Array.isArray(rawTaps)) return [];
+
+    const taps = rawTaps
+      .filter((t) => t && typeof t === 'object')
+      .map((tap) => ({
+        at:
+          Number.isFinite(tap.at) && (tap.at as number) >= 0
+            ? Math.floor(tap.at as number)
+            : 0,
+        x: Number.isFinite(tap.x) ? Number(tap.x) : 0,
+        y: Number.isFinite(tap.y) ? Number(tap.y) : 0,
+        hit: Boolean(tap.hit),
+        targetType: tap.targetType ?? null,
+        spawnedAt:
+          tap.spawnedAt == null || !Number.isFinite(tap.spawnedAt)
+            ? null
+            : Math.floor(tap.spawnedAt),
+      }))
+      .filter((tap) => tap.at >= 0 && tap.at <= roundDurationMs + 10_000)
+      .sort((a, b) => a.at - b.at);
+
+    return taps;
+  }
+
+  private analyzeTaps(taps: NormalizedTap[]): TapMetrics {
+    const totalClicks = taps.length;
+    let hits = 0;
+    let emptyClicks = 0;
+    let epicHits = 0;
+    let melasHits = 0;
+    let commonHits = 0;
+
+    const intervals: number[] = [];
+    const reactions: number[] = [];
+
+    for (let i = 0; i < taps.length; i++) {
+      const tap = taps[i];
+      const prev = taps[i - 1];
+
+      if (prev) {
+        intervals.push(tap.at - prev.at);
+      }
+
+      if (tap.hit) {
+        hits++;
+
+        if (tap.targetType === 'EPIC') {
+          epicHits++;
+        } else if (tap.targetType === 'MELAS') {
+          melasHits++;
+        } else {
+          commonHits++;
+        }
+
+        if (
+          tap.spawnedAt !== null &&
+          Number.isFinite(tap.spawnedAt) &&
+          tap.spawnedAt >= 0 &&
+          tap.spawnedAt <= tap.at
+        ) {
+          reactions.push(tap.at - tap.spawnedAt);
+        }
+      } else {
+        emptyClicks++;
+      }
+    }
+
+    let longestHitStreak = 0;
+    let currentStreak = 0;
+
+    for (const tap of taps) {
+      if (tap.hit) {
+        currentStreak++;
+        if (currentStreak > longestHitStreak) {
+          longestHitStreak = currentStreak;
+        }
+      } else {
+        currentStreak = 0;
+      }
+    }
+
+    return {
+      totalClicks,
+      hits,
+      emptyClicks,
+      epicHits,
+      melasHits,
+      commonHits: Math.max(0, commonHits),
+      hitRate: totalClicks > 0 ? hits / totalClicks : 0,
+
+      avgIntervalMs: this.avg(intervals),
+      intervalStdMs: this.std(intervals),
+
+      avgReactionMs: reactions.length ? this.avg(reactions) : null,
+      reactionStdMs: reactions.length ? this.std(reactions) : null,
+      fastestReactionMs: reactions.length ? Math.min(...reactions) : null,
+
+      longestHitStreak,
+    };
+  }
+
+  private calculateServerScore(metrics: TapMetrics): number {
+    return (
+      metrics.commonHits * 1 + metrics.epicHits * 10 + metrics.melasHits * 1
+    );
+  }
+
+  private buildSuspicionScore(params: {
+    durationMs: number;
+    roundDurationMs: number;
+    metrics: TapMetrics;
+    serverScore: number;
+  }): SuspicionResult {
+    const { durationMs, roundDurationMs, metrics, serverScore } = params;
+
+    let suspicionScore = 0;
+    const reasons: string[] = [];
+
+    const clicksPerSecond =
+      durationMs > 0 ? metrics.totalClicks / (durationMs / 1000) : 0;
+    const epicRatio = metrics.epicHits / Math.max(1, metrics.totalClicks);
+    const normalizedDuration =
+      roundDurationMs > 0 ? durationMs / roundDurationMs : 1;
+
+    if (metrics.totalClicks >= 100 && metrics.emptyClicks === 0) {
+      suspicionScore += 4;
+      reasons.push('no misses in long round');
+    }
+
+    if (metrics.totalClicks >= 150 && metrics.hitRate > 0.97) {
+      suspicionScore += 3;
+      reasons.push(`hitRate too high: ${metrics.hitRate.toFixed(3)}`);
+    }
+
+    if (metrics.avgIntervalMs > 0 && metrics.avgIntervalMs < 95) {
+      suspicionScore += 3;
+      reasons.push(
+        `avg interval too fast: ${metrics.avgIntervalMs.toFixed(1)}ms`,
+      );
+    }
+
+    if (metrics.intervalStdMs > 0 && metrics.intervalStdMs < 18) {
+      suspicionScore += 3;
+      reasons.push(
+        `robotic interval std: ${metrics.intervalStdMs.toFixed(1)}ms`,
+      );
+    }
+
+    if (metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 70) {
+      suspicionScore += 3;
+      reasons.push(`inhuman fastest reaction: ${metrics.fastestReactionMs}ms`);
+    }
+
+    if (
+      metrics.avgReactionMs !== null &&
+      metrics.totalClicks >= 80 &&
+      metrics.avgReactionMs < 110
+    ) {
+      suspicionScore += 2;
+      reasons.push(
+        `avg reaction too fast: ${metrics.avgReactionMs.toFixed(1)}ms`,
+      );
+    }
+
+    if (
+      metrics.reactionStdMs !== null &&
+      metrics.reactionStdMs > 0 &&
+      metrics.reactionStdMs < 20
+    ) {
+      suspicionScore += 2;
+      reasons.push(
+        `robotic reaction std: ${metrics.reactionStdMs.toFixed(1)}ms`,
+      );
+    }
+
+    if (metrics.longestHitStreak >= 80) {
+      suspicionScore += 2;
+      reasons.push(`perfect streak too long: ${metrics.longestHitStreak}`);
+    }
+
+    if (clicksPerSecond > 7.5) {
+      suspicionScore += 2;
+      reasons.push(`too fast clicksPerSecond: ${clicksPerSecond.toFixed(2)}`);
+    }
+
+    if (clicksPerSecond > 8.5) {
+      suspicionScore += 3;
+      reasons.push(`extreme clicksPerSecond: ${clicksPerSecond.toFixed(2)}`);
+    }
+
+    if (epicRatio > 0.28) {
+      suspicionScore += 2;
+      reasons.push(`high epic ratio: ${epicRatio.toFixed(3)}`);
+    }
+
+    if (epicRatio > 0.36) {
+      suspicionScore += 3;
+      reasons.push(`very high epic ratio: ${epicRatio.toFixed(3)}`);
+    }
+
+    if (serverScore >= 520) {
+      suspicionScore += 2;
+      reasons.push(`very high score: ${serverScore}`);
+    }
+
+    if (serverScore >= 600) {
+      suspicionScore += 3;
+      reasons.push(`extreme score: ${serverScore}`);
+    }
+
+    if (normalizedDuration < 0.35 && serverScore >= 350) {
+      suspicionScore += 3;
+      reasons.push('high score in too short duration');
+    }
+
+    return { suspicionScore, reasons };
+  }
+
+  private getStarsEarned(serverScore: number): number {
+    let starsEarned = Math.floor(serverScore / 12);
+    starsEarned = Math.max(starsEarned, 3);
+    starsEarned = Math.min(starsEarned, 25);
+
+    if (serverScore >= 250) starsEarned += 5;
+    if (serverScore >= 350) starsEarned += 5;
+
+    return Math.min(starsEarned, 35);
+  }
+
+  private getXpForNextLevel(level: number): number {
+    return 100 + (level - 1) * 500;
+  }
+
   private async invalidateGame(params: {
     gameId: number;
     userId: number;
     reason: string;
-    // опционально: что пришло от клиента — чтобы видеть в логах
-    payload?: {
-      score?: number;
-      clicks?: number;
-      epicCount?: number;
-      melasCount?: number;
-    };
+    suspicionScore?: number;
+    suspicionReasons?: string[];
   }) {
-    const { gameId, userId, reason, payload } = params;
+    const { gameId, userId, reason, suspicionScore, suspicionReasons } = params;
 
     try {
-      // Закрываем игру, чтобы нельзя было потом “дозавершить”
       await this.prisma.game.update({
         where: { id: gameId },
         data: {
           score: 0,
           clicks: 0,
           epicCount: 0,
-          melasCount: 0 as any, // если поля нет — убери строку
+          melasCount: 0,
+          emptyClicks: 0,
+          hitRate: 0,
+          avgIntervalMs: 0,
+          intervalStdMs: 0,
+          avgReactionMs: null,
+          reactionStdMs: null,
+          fastestReactionMs: null,
+          longestHitStreak: 0,
+          invalidated: true,
+          invalidReason: reason,
+          suspicionScore: suspicionScore ?? 0,
+          suspicionReasons: suspicionReasons ?? [],
           finishedAt: new Date(),
         },
       });
     } catch (e) {
-      // даже если update не прошёл — просто лог
       console.error('invalidateGame update failed', {
         gameId,
         userId,
@@ -174,12 +482,18 @@ export class GameService {
       });
     }
 
-    console.warn('⚠️ GAME INVALIDATED:', { userId, gameId, reason, payload });
+    console.warn('⚠️ GAME INVALIDATED', {
+      userId,
+      gameId,
+      reason,
+      suspicionScore,
+      suspicionReasons,
+    });
   }
 
   /**
-   * Завершить игру
-   * melasCount — сколько раз был пойман MELAS (даёт мясо)
+   * LEGACY finish — не ломает старый фронт
+   * Если rawTaps пришли -> автоматом используем V2 anti-cheat
    */
   async finishGame(
     token: string,
@@ -188,10 +502,22 @@ export class GameService {
     clicks: number,
     epicCount: number,
     melasCount: number,
+    rawTaps: RawTap[] = [],
   ) {
+    if (Array.isArray(rawTaps) && rawTaps.length > 0) {
+      return this.finishGameV2(
+        token,
+        gameId,
+        score,
+        clicks,
+        epicCount,
+        melasCount,
+        rawTaps,
+      );
+    }
+
     const userId = this.getUserIdFromToken(token);
 
-    // 0) user + block check
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -209,15 +535,18 @@ export class GameService {
     if (!user) throw new UnauthorizedException('User not found');
     if (user.isBlocked) throw new ForbiddenException('User is blocked');
 
-    // 1) basic validation
     if (!Number.isFinite(gameId) || gameId <= 0) {
       throw new BadRequestException('Invalid gameId');
     }
 
-    const melasCountSafe = Number.isFinite(melasCount) ? melasCount : 0;
-    const scoreSafe = Number.isFinite(score) ? score : 0;
-    const clicksSafe = Number.isFinite(clicks) ? clicks : 0;
-    const epicCountSafe = Number.isFinite(epicCount) ? epicCount : 0;
+    const scoreSafe = Number.isFinite(score) ? Math.floor(score) : 0;
+    const clicksSafe = Number.isFinite(clicks) ? Math.floor(clicks) : 0;
+    const epicCountSafe = Number.isFinite(epicCount)
+      ? Math.floor(epicCount)
+      : 0;
+    const melasCountSafe = Number.isFinite(melasCount)
+      ? Math.floor(melasCount)
+      : 0;
 
     if (
       [scoreSafe, clicksSafe, epicCountSafe, melasCountSafe].some((v) => v < 0)
@@ -225,17 +554,16 @@ export class GameService {
       throw new BadRequestException('Negative values are not allowed');
     }
 
-    // 2) load game + ownership
     const game = await this.prisma.game.findUnique({ where: { id: gameId } });
 
     if (!game || game.userId !== userId) {
       throw new UnauthorizedException('Game not found or not yours');
     }
+
     if (game.finishedAt) {
       throw new BadRequestException('Game already finished');
     }
 
-    // 3) time validation (НЕ БАНИМ, просто не засчитываем)
     const BASE_DURATION_MS = 60_000;
     const EXTRA_TIME_PER_LEVEL_MS = 5_000;
     const ROUND_DURATION_MS =
@@ -243,111 +571,81 @@ export class GameService {
 
     const durationMs = Date.now() - game.createdAt.getTime();
 
-    // ✅ снижено с 8000 → 5000 (меньше ложных срабатываний)
     if (durationMs < 5_000) {
       await this.invalidateGame({
         gameId,
         userId,
         reason: `finish too fast: ${durationMs}ms`,
-        payload: {
-          score: scoreSafe,
-          clicks: clicksSafe,
-          epicCount: epicCountSafe,
-          melasCount: melasCountSafe,
-        },
       });
       throw new BadRequestException('Game finished too fast (not counted)');
     }
 
-    // ✅ даём больше “запаса” по времени: +10 сек (на лаги/телеграм/фон)
     if (durationMs > ROUND_DURATION_MS + 10_000) {
       await this.invalidateGame({
         gameId,
         userId,
-        reason: `round time exceeded: ${durationMs}ms > ${ROUND_DURATION_MS + 10_000}ms`,
-        payload: {
-          score: scoreSafe,
-          clicks: clicksSafe,
-          epicCount: epicCountSafe,
-          melasCount: melasCountSafe,
-        },
+        reason: `round time exceeded: ${durationMs}ms`,
       });
       throw new BadRequestException('Round time exceeded (not counted)');
     }
 
-    // 4) anti-cheat (НЕ БАНИМ, просто не засчитываем)
-    // Важное: любые странные метрики часто = баг клиента/дубль-запрос/глючный счетчик
-    if (
-      clicksSafe > 600 || // было 500 — чуть поднял
-      epicCountSafe > 120 || // было 80 — слишком жёстко
-      epicCountSafe > clicksSafe || // невозможно
-      melasCountSafe > clicksSafe // невозможно
-    ) {
+    if (clicksSafe > 600) {
       await this.invalidateGame({
         gameId,
         userId,
-        reason: 'invalid game metrics',
-        payload: {
-          score: scoreSafe,
-          clicks: clicksSafe,
-          epicCount: epicCountSafe,
-          melasCount: melasCountSafe,
-        },
+        reason: `too many clicks: ${clicksSafe}`,
       });
-      throw new BadRequestException('Invalid game metrics (not counted)');
+      throw new BadRequestException('Suspicious clicks detected');
     }
 
-    // ratio check (делаем мягче)
-    const epicRatio = epicCountSafe / Math.max(1, clicksSafe);
-    if (epicRatio > 0.55) {
+    if (epicCountSafe > clicksSafe) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: `epicCount > clicks (${epicCountSafe} > ${clicksSafe})`,
+      });
+      throw new BadRequestException('Suspicious epic count');
+    }
+
+    if (melasCountSafe > clicksSafe) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: `melasCount > clicks (${melasCountSafe} > ${clicksSafe})`,
+      });
+      throw new BadRequestException('Suspicious melas count');
+    }
+
+    const epicRatio = clicksSafe > 0 ? epicCountSafe / clicksSafe : 0;
+    if (clicksSafe >= 80 && epicRatio > 0.55) {
       await this.invalidateGame({
         gameId,
         userId,
         reason: `epic ratio too high: ${epicRatio.toFixed(3)}`,
-        payload: {
-          score: scoreSafe,
-          clicks: clicksSafe,
-          epicCount: epicCountSafe,
-          melasCount: melasCountSafe,
-        },
       });
-      throw new BadRequestException('Suspicious metrics (not counted)');
+      throw new BadRequestException('Suspicious epic ratio');
     }
 
-    const minPossibleScore = clicksSafe; // если все были по 1
-    const maxPossibleScore = clicksSafe * 10; // если все были legendary по 10
-
-    if (scoreSafe < minPossibleScore || scoreSafe > maxPossibleScore) {
+    if (scoreSafe > 590) {
       await this.invalidateGame({
         gameId,
         userId,
-        reason: `score out of range: ${scoreSafe}, clicks=${clicksSafe}`,
-        payload: {
-          score: scoreSafe,
-          clicks: clicksSafe,
-          epicCount: epicCountSafe,
-          melasCount: melasCountSafe,
-        },
+        reason: `score above hard cap: ${scoreSafe}`,
       });
-      throw new BadRequestException('Invalid score range (not counted)');
+      throw new BadRequestException('Suspicious score detected');
     }
 
-    const serverScore = scoreSafe;
-    // 6) stars
-    let starsEarned = Math.floor(serverScore / 12);
+    let starsEarned = Math.floor(scoreSafe / 12);
     starsEarned = Math.max(starsEarned, 3);
     starsEarned = Math.min(starsEarned, 25);
 
-    if (serverScore >= 250) starsEarned += 5;
-    if (serverScore >= 350) starsEarned += 5;
+    if (scoreSafe >= 250) starsEarned += 5;
+    if (scoreSafe >= 350) starsEarned += 5;
 
     starsEarned = Math.min(starsEarned, 35);
 
-    // 6.5) meat — только за melas
     const meatEarned = melasCountSafe;
-
-    // 7) XP + level
-    const xpGained = Math.floor(serverScore / 2);
+    const xpGained = Math.floor(scoreSafe / 2);
 
     let newLevel = user.level;
     let newXp = user.xp + xpGained;
@@ -359,16 +657,26 @@ export class GameService {
       leveledUp = true;
     }
 
-    // 8) transaction: update game + user
     const [updatedGame, updatedUser] = await this.prisma.$transaction([
       this.prisma.game.update({
         where: { id: gameId },
         data: {
-          // ✅ пишем serverScore, а не клиентский score
-          score: serverScore,
+          score: scoreSafe,
           clicks: clicksSafe,
           epicCount: epicCountSafe,
-          melasCount: melasCountSafe as any, // если поля нет — убери строку
+          melasCount: melasCountSafe,
+          emptyClicks: 0,
+          hitRate: clicksSafe > 0 ? 1 : 0,
+          avgIntervalMs: 0,
+          intervalStdMs: 0,
+          avgReactionMs: null,
+          reactionStdMs: null,
+          fastestReactionMs: null,
+          longestHitStreak: 0,
+          invalidated: false,
+          invalidReason: null,
+          suspicionScore: 0,
+          suspicionReasons: [],
           finishedAt: new Date(),
         },
       }),
@@ -390,11 +698,15 @@ export class GameService {
       }),
     ]);
 
-    // 9) referral — реально только за первый “засчитанный finished game”
     let referralRewardTickets = 0;
 
     const finishedCount = await this.prisma.game.count({
-      where: { userId, finishedAt: { not: null }, score: { gt: 0 } }, // score>0 = засчитанные игры
+      where: {
+        userId,
+        finishedAt: { not: null },
+        score: { gt: 0 },
+        invalidated: false,
+      },
     });
 
     if (finishedCount === 1) {
@@ -434,10 +746,9 @@ export class GameService {
 
     return {
       ok: true,
+      mode: 'legacy',
       game: updatedGame,
-
-      // клиенту показываем то, что реально засчитано
-      serverScore,
+      serverScore: scoreSafe,
 
       starsEarned,
       totalStars: updatedUser.stars,
@@ -447,22 +758,333 @@ export class GameService {
       xpGained,
       leveledUp,
 
-      melasCount: melasCountSafe,
-
       meatEarned,
       totalMeat: updatedUser.meat,
+
+      melasCount: melasCountSafe,
+      referralRewardTickets,
+    };
+  }
+
+  /**
+   * Сильный anti-cheat по tap-логам
+   */
+  async finishGameV2(
+    token: string,
+    gameId: number,
+    clientScore: number,
+    clientClicks: number,
+    clientEpicCount: number,
+    clientMelasCount: number,
+    rawTaps: RawTap[],
+  ) {
+    const userId = this.getUserIdFromToken(token);
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        isBlocked: true,
+        extraTimeLevel: true,
+        level: true,
+        xp: true,
+        stars: true,
+        telegramId: true,
+        meat: true,
+      },
+    });
+
+    if (!user) throw new UnauthorizedException('User not found');
+    if (user.isBlocked) throw new ForbiddenException('User is blocked');
+
+    if (!Number.isFinite(gameId) || gameId <= 0) {
+      throw new BadRequestException('Invalid gameId');
+    }
+
+    const game = await this.prisma.game.findUnique({
+      where: { id: gameId },
+    });
+
+    if (!game || game.userId !== userId) {
+      throw new UnauthorizedException('Game not found or not yours');
+    }
+
+    if (game.finishedAt) {
+      throw new BadRequestException('Game already finished');
+    }
+
+    const BASE_DURATION_MS = 60_000;
+    const EXTRA_TIME_PER_LEVEL_MS = 5_000;
+    const ROUND_DURATION_MS =
+      BASE_DURATION_MS + (user.extraTimeLevel ?? 0) * EXTRA_TIME_PER_LEVEL_MS;
+
+    const durationMs = Date.now() - game.createdAt.getTime();
+
+    if (durationMs < 5_000) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: `finish too fast: ${durationMs}ms`,
+      });
+      throw new BadRequestException('Game finished too fast (not counted)');
+    }
+
+    if (durationMs > ROUND_DURATION_MS + 10_000) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: `round time exceeded: ${durationMs}ms`,
+      });
+      throw new BadRequestException('Round time exceeded (not counted)');
+    }
+
+    const taps = this.normalizeTaps(rawTaps, ROUND_DURATION_MS);
+    const metrics = this.analyzeTaps(taps);
+
+    if (metrics.totalClicks === 0) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: 'no taps provided',
+      });
+      throw new BadRequestException('No taps provided');
+    }
+
+    if (metrics.totalClicks > 450) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: `too many taps: ${metrics.totalClicks}`,
+      });
+      throw new BadRequestException('Too many taps');
+    }
+
+    if (metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 50) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: `impossible fastest reaction: ${metrics.fastestReactionMs}ms`,
+      });
+      throw new BadRequestException('Impossible reaction speed');
+    }
+
+    if (metrics.avgIntervalMs > 0 && metrics.avgIntervalMs < 70) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: `impossible avg interval: ${metrics.avgIntervalMs.toFixed(1)}ms`,
+      });
+      throw new BadRequestException('Impossible click speed');
+    }
+
+    const serverScore = this.calculateServerScore(metrics);
+
+    const scoreDelta = Math.abs((clientScore || 0) - serverScore);
+    const clicksDelta = Math.abs((clientClicks || 0) - metrics.totalClicks);
+    const epicDelta = Math.abs((clientEpicCount || 0) - metrics.epicHits);
+    const melasDelta = Math.abs((clientMelasCount || 0) - metrics.melasHits);
+
+    if (scoreDelta > 25 || clicksDelta > 5 || epicDelta > 3 || melasDelta > 3) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason:
+          `client/server mismatch ` +
+          `(scoreΔ=${scoreDelta}, clicksΔ=${clicksDelta}, epicΔ=${epicDelta}, melasΔ=${melasDelta})`,
+      });
+      throw new BadRequestException('Client metrics mismatch');
+    }
+
+    const { suspicionScore, reasons } = this.buildSuspicionScore({
+      durationMs,
+      roundDurationMs: ROUND_DURATION_MS,
+      metrics,
+      serverScore,
+    });
+
+    if (suspicionScore >= 9) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: 'anti-cheat hard reject',
+        suspicionScore,
+        suspicionReasons: reasons,
+      });
+      throw new BadRequestException('Suspicious game detected');
+    }
+
+    if (suspicionScore >= 6 && serverScore >= 500) {
+      await this.invalidateGame({
+        gameId,
+        userId,
+        reason: 'anti-cheat reject: high score with suspicious metrics',
+        suspicionScore,
+        suspicionReasons: reasons,
+      });
+      throw new BadRequestException('Suspicious high-score game');
+    }
+
+    const starsEarned = this.getStarsEarned(serverScore);
+    const meatEarned = metrics.melasHits;
+    const xpGained = Math.floor(serverScore / 2);
+
+    let newLevel = user.level;
+    let newXp = user.xp + xpGained;
+    let leveledUp = false;
+
+    while (newXp >= this.getXpForNextLevel(newLevel)) {
+      newXp -= this.getXpForNextLevel(newLevel);
+      newLevel += 1;
+      leveledUp = true;
+    }
+
+    const [, updatedGame, updatedUser] = await this.prisma.$transaction([
+      this.prisma.gameTap.createMany({
+        data: taps.map((t) => ({
+          gameId,
+          atMs: t.at,
+          x: t.x,
+          y: t.y,
+          hit: t.hit,
+          targetType: t.targetType ?? null,
+          spawnedAtMs: t.spawnedAt,
+        })),
+      }),
+      this.prisma.game.update({
+        where: { id: gameId },
+        data: {
+          score: serverScore,
+          clicks: metrics.totalClicks,
+          epicCount: metrics.epicHits,
+          melasCount: metrics.melasHits,
+          emptyClicks: metrics.emptyClicks,
+          hitRate: metrics.hitRate,
+          avgIntervalMs: metrics.avgIntervalMs,
+          intervalStdMs: metrics.intervalStdMs,
+          avgReactionMs: metrics.avgReactionMs,
+          reactionStdMs: metrics.reactionStdMs,
+          fastestReactionMs: metrics.fastestReactionMs,
+          longestHitStreak: metrics.longestHitStreak,
+          suspicionScore,
+          suspicionReasons: reasons,
+          invalidated: false,
+          invalidReason: null,
+          finishedAt: new Date(),
+        },
+      }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          stars: { increment: starsEarned },
+          level: newLevel,
+          xp: newXp,
+          meat: { increment: meatEarned },
+        },
+        select: {
+          stars: true,
+          level: true,
+          xp: true,
+          meat: true,
+          telegramId: true,
+        },
+      }),
+    ]);
+
+    if (serverScore >= 500 || suspicionScore >= 4) {
+      console.warn('🟠 SUSPICIOUS BUT COUNTED GAME', {
+        userId,
+        gameId,
+        durationMs,
+        serverScore,
+        clientScore,
+        suspicionScore,
+        reasons,
+        metrics,
+      });
+    }
+
+    let referralRewardTickets = 0;
+
+    const finishedCount = await this.prisma.game.count({
+      where: {
+        userId,
+        finishedAt: { not: null },
+        score: { gt: 0 },
+        invalidated: false,
+      },
+    });
+
+    if (finishedCount === 1) {
+      const referral = await this.prisma.referral.findFirst({
+        where: { invitedId: userId, rewarded: false },
+        include: { inviter: true },
+      });
+
+      if (referral?.inviter) {
+        const REFERRAL_TICKETS = 5;
+        referralRewardTickets = REFERRAL_TICKETS;
+
+        await this.prisma.$transaction([
+          ...Array.from({ length: REFERRAL_TICKETS }).map(() =>
+            this.prisma.ticket.create({
+              data: { userId: referral.inviterId, type: TicketType.REFERRAL },
+            }),
+          ),
+          this.prisma.referral.update({
+            where: { id: referral.id },
+            data: { rewarded: true },
+          }),
+        ]);
+
+        try {
+          if (referral.inviter.telegramId) {
+            await this.notificationService.sendReferralReward(
+              referral.inviter.telegramId,
+              REFERRAL_TICKETS,
+            );
+          }
+        } catch (e) {
+          console.error('Referral notification failed', e);
+        }
+      }
+    }
+
+    return {
+      ok: true,
+      mode: 'v2',
+      game: updatedGame,
+      serverScore,
+      clientScore,
+      scoreDelta,
+
+      starsEarned,
+      totalStars: updatedUser.stars,
+
+      level: updatedUser.level,
+      xp: updatedUser.xp,
+      xpGained,
+      leveledUp,
+
+      melasCount: metrics.melasHits,
+      meatEarned,
+      totalMeat: updatedUser.meat,
+
+      suspicionScore,
+      suspicionReasons: reasons,
+
+      emptyClicks: metrics.emptyClicks,
+      hitRate: metrics.hitRate,
+      avgIntervalMs: metrics.avgIntervalMs,
+      intervalStdMs: metrics.intervalStdMs,
+      avgReactionMs: metrics.avgReactionMs,
+      reactionStdMs: metrics.reactionStdMs,
+      fastestReactionMs: metrics.fastestReactionMs,
+      longestHitStreak: metrics.longestHitStreak,
 
       referralRewardTickets,
     };
   }
 
-  private getXpForNextLevel(level: number): number {
-    return 100 + (level - 1) * 500;
-  }
-
-  // ─────────────────────────────────────────
-  // DAILY QUESTS (как у тебя было) — без изменений
-  // ─────────────────────────────────────────
   async getDailyQuests(token: string) {
     const userId = this.getUserIdFromToken(token);
 
@@ -473,7 +1095,11 @@ export class GameService {
     const [user, gamesToday] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: userId } }),
       this.prisma.game.findMany({
-        where: { userId, finishedAt: { gte: startOfDay } },
+        where: {
+          userId,
+          finishedAt: { gte: startOfDay },
+          invalidated: false,
+        },
       }),
     ]);
 
@@ -521,7 +1147,10 @@ export class GameService {
         claimedToday:
           !!user.dailyPlay3ClaimAt && user.dailyPlay3ClaimAt >= startOfDay,
       },
-    ].map((q) => ({ ...q, claimable: q.completed && !q.claimedToday }));
+    ].map((q) => ({
+      ...q,
+      claimable: q.completed && !q.claimedToday,
+    }));
 
     return {
       date: startOfDay.toISOString().slice(0, 10),
@@ -550,7 +1179,11 @@ export class GameService {
     const [user, gamesToday] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: userId } }),
       this.prisma.game.findMany({
-        where: { userId, finishedAt: { gte: startOfDay } },
+        where: {
+          userId,
+          finishedAt: { gte: startOfDay },
+          invalidated: false,
+        },
       }),
     ]);
 
@@ -592,8 +1225,9 @@ export class GameService {
     }
 
     if (!completed) throw new BadRequestException('Quest not completed yet');
-    if (alreadyClaimed)
+    if (alreadyClaimed) {
       throw new BadRequestException('Reward already claimed today');
+    }
 
     userData.stars = { increment: reward };
 
@@ -603,6 +1237,10 @@ export class GameService {
       select: { stars: true },
     });
 
-    return { questId, reward, stars: updatedUser.stars };
+    return {
+      questId,
+      reward,
+      stars: updatedUser.stars,
+    };
   }
 }
