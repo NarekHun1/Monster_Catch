@@ -38,6 +38,8 @@ type TapMetrics = {
   emptyClicks: number;
   epicHits: number;
   melasHits: number;
+  rareHits: number;
+  legendaryHits: number;
   commonHits: number;
   hitRate: number;
 
@@ -238,6 +240,8 @@ export class GameService {
     let emptyClicks = 0;
     let epicHits = 0;
     let melasHits = 0;
+    let rareHits = 0;
+    let legendaryHits = 0;
     let commonHits = 0;
 
     const intervals: number[] = [];
@@ -258,7 +262,12 @@ export class GameService {
           epicHits++;
         } else if (tap.targetType === 'MELAS') {
           melasHits++;
+        } else if (tap.targetType === 'RARE') {
+          rareHits++;
+        } else if (tap.targetType === 'LEGENDARY') {
+          legendaryHits++;
         } else {
+          // всё остальное считаем COMMON
           commonHits++;
         }
 
@@ -295,7 +304,9 @@ export class GameService {
       emptyClicks,
       epicHits,
       melasHits,
-      commonHits: Math.max(0, commonHits),
+      rareHits,
+      legendaryHits,
+      commonHits,
       hitRate: totalClicks > 0 ? hits / totalClicks : 0,
 
       avgIntervalMs: this.avg(intervals),
@@ -311,7 +322,11 @@ export class GameService {
 
   private calculateServerScore(metrics: TapMetrics): number {
     return (
-      metrics.commonHits * 1 + metrics.epicHits * 10 + metrics.melasHits * 1
+      metrics.commonHits * 1 +
+      metrics.rareHits * 3 +
+      metrics.legendaryHits * 5 +
+      metrics.melasHits * 1 +
+      metrics.epicHits * 10
     );
   }
 
