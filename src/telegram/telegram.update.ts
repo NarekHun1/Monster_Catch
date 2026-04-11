@@ -1,6 +1,6 @@
 // src/telegram/telegram.update.ts
-import { Ctx, Start, Update, On, Action } from 'nestjs-telegraf';
-import { Context } from 'telegraf';
+import { Ctx, Start, Update, On, Action, InjectBot } from 'nestjs-telegraf';
+import { Context, Telegraf } from 'telegraf';
 import { ConfigService } from '@nestjs/config';
 import { UserService } from '../user/user.service';
 import { PaymentService } from '../payments/payment.service';
@@ -110,6 +110,7 @@ export class TelegramUpdate {
     private readonly users: UserService,
     private readonly payments: PaymentService,
     private readonly config: ConfigService,
+    @InjectBot() private readonly bot: Telegraf,
   ) {}
 
   // ───────────────────────────────
@@ -181,7 +182,9 @@ export class TelegramUpdate {
       ctx.reply(escMdV2(HOW_TO_PLAY_RAW), {
         parse_mode: 'MarkdownV2',
         reply_markup: {
-          inline_keyboard: [[{ text: '🎮 Играть', web_app: { url: webAppUrl } }]],
+          inline_keyboard: [
+            [{ text: '🎮 Играть', web_app: { url: webAppUrl } }],
+          ],
         },
       }),
     );

@@ -72,23 +72,22 @@ export class EventTournamentService {
 
   // ───────────────── CONFIG ─────────────────
   private getEventConfigs(): EventTournamentConfig[] {
-    /**
-     * Example:
-     * 1 March 2026 00:00 Yerevan (UTC+4) = 2026-02-29 20:00:00Z
-     */
-    const startsAt = new Date(); // "start now"
-    const endsAt = new Date('2026-02-29T20:00:00.000Z'); // 1 Mar 2026 00:00 Yerevan
-    const joinDeadline = endsAt; // allow join until end (you can set earlier)
+    const startsAt = new Date();
+
+    const endsAt = new Date();
+    endsAt.setDate(endsAt.getDate() + 5);
+
+    const joinDeadline = endsAt;
 
     return [
       {
-        slug: 'big-march-2026',
-        title: '🏆 BIG MARCH',
+        slug: 'monster-april-2026',
+        title: '🔥 MONSTER CATCH TOURNAMENT',
         startsAt,
         endsAt,
         joinDeadline,
-        entryFee: 100,
-        prizePool: 10_000,
+        entryFee: 80,
+        prizePool: 3340,
         coinsOnly: true,
       },
     ];
@@ -100,12 +99,9 @@ export class EventTournamentService {
     return cfg;
   }
 
-  // ───────────────── PRIZES 40/20/10 ─────────────────
-  private calculatePercentPrizes(prizePool: number): [number, number, number] {
-    const p1 = Math.floor(prizePool * 0.4);
-    const p2 = Math.floor(prizePool * 0.2);
-    const p3 = Math.floor(prizePool * 0.1);
-    return [p1, p2, p3];
+  // ───────────────── FIXED PRIZES TOP-7 ─────────────────
+  private getFixedPrizes(): number[] {
+    return [1670, 668, 334, 167, 167, 167, 167];
   }
 
   // ───────────────── CREATE / GET ─────────────────
@@ -126,7 +122,6 @@ export class EventTournamentService {
     });
 
     if (existing) {
-      // auto-activate when startsAt passed
       if (
         existing.status === TournamentStatus.PLANNED &&
         now >= existing.startsAt
@@ -142,7 +137,6 @@ export class EventTournamentService {
     const status =
       now >= cfg.startsAt ? TournamentStatus.ACTIVE : TournamentStatus.PLANNED;
 
-    // Keep type as an existing enum (so we don't touch your old system)
     return this.prisma.tournament.create({
       data: {
         type: 'DAILY',
@@ -150,7 +144,15 @@ export class EventTournamentService {
         rulesJson: {
           title: cfg.title,
           coinsOnly: !!cfg.coinsOnly,
-          percentPrizes: { first: 0.4, second: 0.2, third: 0.1 },
+          fixedPrizes: {
+            1: 1670,
+            2: 668,
+            3: 334,
+            4: 167,
+            5: 167,
+            6: 167,
+            7: 167,
+          },
         } as Prisma.InputJsonValue,
         startsAt: cfg.startsAt,
         endsAt: cfg.endsAt,
@@ -187,11 +189,10 @@ export class EventTournamentService {
         });
         coins = u?.coins ?? 0;
       } catch {
-        // ignore optional auth
+        // optional auth ignore
       }
     }
 
-    // only fetch minimal user fields
     const participants = await this.prisma.tournamentParticipant.findMany({
       where: { tournamentId: t.id },
       include: {
@@ -213,6 +214,8 @@ export class EventTournamentService {
     const rules = t.rulesJson as any;
     const title = rules?.title ?? 'Event Tournament';
 
+    const fixedPrizes = this.getFixedPrizes();
+
     return {
       tournamentId: t.id,
       slug: t.slug,
@@ -223,16 +226,19 @@ export class EventTournamentService {
       joinDeadline: t.joinDeadline,
       entryFee: t.entryFee,
       prizePool: t.prizePool,
+      fixedPrizes,
       timeLeftMs,
       timeLeftSec: Math.ceil(timeLeftMs / 1000),
       joinLeftMs,
       joinLeftSec: Math.ceil(joinLeftMs / 1000),
       joined,
       coins,
-      participants: participants.map((p) => ({
+      participants: participants.map((p, index) => ({
+        place: index + 1,
         userId: p.userId,
         username: p.user.username ?? p.user.firstName ?? null,
         score: p.score,
+        prize: index < fixedPrizes.length ? fixedPrizes[index] : 0,
       })),
     };
   }
@@ -247,6 +253,7 @@ export class EventTournamentService {
     if (t.status !== TournamentStatus.ACTIVE || now >= t.endsAt) {
       throw new BadRequestException('Tournament not active');
     }
+
     if (now > t.joinDeadline) {
       throw new BadRequestException('Join deadline passed');
     }
@@ -255,16 +262,21 @@ export class EventTournamentService {
       const exists = await tx.tournamentParticipant.findUnique({
         where: { userId_tournamentId: { userId, tournamentId: t.id } },
       });
-      if (exists) return { joined: false, tournamentId: t.id, slug };
+
+      if (exists) {
+        return { joined: false, tournamentId: t.id, slug };
+      }
 
       const u = await tx.user.findUnique({
         where: { id: userId },
         select: { coins: true, isBlocked: true },
       });
+
       if (!u) throw new BadRequestException('User not found');
       if (u.isBlocked) throw new BadRequestException('User blocked');
-      if (u.coins < t.entryFee)
+      if (u.coins < t.entryFee) {
         throw new BadRequestException('Not enough coins');
+      }
 
       await tx.user.update({
         where: { id: userId },
@@ -284,7 +296,6 @@ export class EventTournamentService {
     });
   }
 
-  // submit max score (if score is higher, update)
   async submitScore(authHeader: string, slug: string, score: number) {
     const userId = this.getUserIdFromToken(authHeader);
     const cfg = this.getConfigBySlug(slug);
@@ -297,8 +308,8 @@ export class EventTournamentService {
     const p = await this.prisma.tournamentParticipant.findUnique({
       where: { userId_tournamentId: { userId, tournamentId: t.id } },
     });
-    if (!p) return { updated: false };
 
+    if (!p) return { updated: false };
     if (score <= p.score) return { updated: false };
 
     await this.prisma.tournamentParticipant.update({
@@ -309,18 +320,72 @@ export class EventTournamentService {
     return { updated: true };
   }
 
+  // ───────────────── DAILY REMINDER ─────────────────
+  @Cron(CronExpression.EVERY_DAY_AT_NOON)
+  async notifyUsersAboutTournament() {
+    try {
+      const cfg = this.getConfigBySlug('monster-april-2026');
+      const t = await this.getOrCreateEventTournament(cfg);
+
+      if (t.status !== TournamentStatus.ACTIVE || new Date() >= t.endsAt) {
+        return;
+      }
+
+      const users = await this.prisma.user.findMany({
+        select: {
+          id: true,
+          telegramId: true,
+          firstName: true,
+          username: true,
+        },
+      });
+
+      for (const user of users) {
+        if (!user.telegramId) continue;
+
+        const joined = await this.prisma.tournamentParticipant.findUnique({
+          where: {
+            userId_tournamentId: {
+              userId: user.id,
+              tournamentId: t.id,
+            },
+          },
+        });
+
+        if (!joined) {
+          await this.safeSendTelegramMessage(
+            String(user.telegramId),
+            `🔥 Новый турнир уже идёт!\n\n` +
+              `🏆 ${cfg.title}\n` +
+              `💰 Призовой фонд: ${cfg.prizePool} coin\n` +
+              `🎟 Вход: ${cfg.entryFee} coin\n` +
+              `⏳ Длительность: 5 дней\n\n` +
+              `Залетай и поборись за топ-7 🚀`,
+          );
+        } else {
+          await this.safeSendTelegramMessage(
+            String(user.telegramId),
+            `🏆 Турнир продолжается!\n\n` +
+              `${cfg.title}\n` +
+              `Твой результат уже сохранён, но ты ещё можешь улучшить счёт 🔥\n\n` +
+              `Зайди в игру и поднимись выше в таблице лидеров 🚀`,
+          );
+        }
+      }
+
+      this.logger.log(
+        `Daily tournament notifications sent for slug=${cfg.slug}`,
+      );
+    } catch (e) {
+      this.logger.warn(`notifyUsersAboutTournament failed: ${String(e)}`);
+    }
+  }
+
   // ───────────────── CRON FINISH ─────────────────
-  /**
-   * Safe finish:
-   * - claims each tournament once (prevents double payouts on multi-instance)
-   * - awards top-3 (40/20/10)
-   * - sends Telegram to every participant
-   */
   @Cron(CronExpression.EVERY_MINUTE)
   async finishExpiredEventTournaments() {
     const now = new Date();
 
-    // find candidates (may be claimed by other instances)
     const candidates = await this.prisma.tournament.findMany({
       where: {
         slug: { not: null },
@@ -334,16 +399,15 @@ export class EventTournamentService {
     let finishedCount = 0;
 
     for (const c of candidates) {
-      // ✅ claim (only one instance will succeed)
       const claimed = await this.prisma.tournament.updateMany({
         where: { id: c.id, status: TournamentStatus.ACTIVE },
         data: { status: TournamentStatus.FINISHED },
       });
+
       if (claimed.count === 0) continue;
 
       finishedCount++;
 
-      // load full data after claim
       const t = await this.prisma.tournament.findUnique({
         where: { id: c.id },
         include: {
@@ -360,6 +424,7 @@ export class EventTournamentService {
           },
         },
       });
+
       if (!t) continue;
 
       const rules = t.rulesJson as any;
@@ -373,18 +438,21 @@ export class EventTournamentService {
         return a.createdAt.getTime() - b.createdAt.getTime();
       });
 
-      const [p1, p2, p3] = this.calculatePercentPrizes(t.prizePool);
+      const fixedPrizes = this.getFixedPrizes();
 
       const winners: Array<{ userId: number; place: number; prize: number }> =
         [];
-      if (sorted[0])
-        winners.push({ userId: sorted[0].userId, place: 1, prize: p1 });
-      if (sorted[1])
-        winners.push({ userId: sorted[1].userId, place: 2, prize: p2 });
-      if (sorted[2])
-        winners.push({ userId: sorted[2].userId, place: 3, prize: p3 });
 
-      // ✅ pay winners (no tournament status update here — already finished by claim)
+      for (let i = 0; i < fixedPrizes.length; i++) {
+        if (sorted[i]) {
+          winners.push({
+            userId: sorted[i].userId,
+            place: i + 1,
+            prize: fixedPrizes[i],
+          });
+        }
+      }
+
       await this.prisma.$transaction(
         winners
           .filter((w) => w.prize > 0)
@@ -397,10 +465,10 @@ export class EventTournamentService {
       );
 
       const prizeByUserId = new Map<number, { prize: number; place: number }>();
-      for (const w of winners)
+      for (const w of winners) {
         prizeByUserId.set(w.userId, { prize: w.prize, place: w.place });
+      }
 
-      // Notify every participant
       for (let i = 0; i < sorted.length; i++) {
         const p = sorted[i];
         const place = i + 1;
@@ -416,9 +484,9 @@ export class EventTournamentService {
           `${title}\n\n` +
           `Ваше место: ${this.formatPlace(place)}\n` +
           `Ваш результат: ${p.score}\n` +
-          (place <= 3
+          (prize > 0
             ? `Ваш приз: 🪙 ${prize}\n\nПоздравляем! 🚀`
-            : `Приз получают только топ-3.\n\nПопробуйте снова! 🔥`);
+            : `Вы не попали в призовые места.\n\nПопробуйте снова в следующем турнире! 🔥`);
 
         await this.safeSendTelegramMessage(String(telegramId), text);
       }
