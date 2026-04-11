@@ -31,6 +31,7 @@ type EventTournamentConfig = {
 @Injectable()
 export class EventTournamentService {
   private readonly logger = new Logger(EventTournamentService.name);
+  private readonly REPLAY_PRICES = [10, 15, 20];
 
   constructor(
     private readonly prisma: PrismaService,
@@ -52,6 +53,18 @@ export class EventTournamentService {
     } catch {
       throw new UnauthorizedException('Invalid token');
     }
+  }
+
+  // ───────────────── HELPERS ─────────────────
+  private getNextReplayPrice(replayCount: number): number | null {
+    return replayCount < this.REPLAY_PRICES.length
+      ? this.REPLAY_PRICES[replayCount]
+      : null;
+  }
+
+  private getAttemptsLeft(replayCount: number, usedAttempts: number): number {
+    const totalAttempts = 1 + replayCount;
+    return Math.max(0, totalAttempts - usedAttempts);
   }
 
   // ───────────────── TELEGRAM ─────────────────
@@ -256,13 +269,34 @@ export class EventTournamentService {
     let coins = 0;
     let userId: number | null = null;
 
+    let replayCount = 0;
+    let usedAttempts = 0;
+    let attemptsLeft = 0;
+    let nextReplayPrice: number | null = null;
+    let bestScore = 0;
+
     if (authHeader) {
       try {
         userId = this.getUserIdFromToken(authHeader);
 
-        joined = !!(await this.prisma.tournamentParticipant.findUnique({
-          where: { userId_tournamentId: { userId, tournamentId: t.id } },
-        }));
+        const participant = await this.prisma.tournamentParticipant.findUnique({
+          where: {
+            userId_tournamentId: {
+              userId,
+              tournamentId: t.id,
+            },
+          },
+        });
+
+        joined = !!participant;
+
+        if (participant) {
+          replayCount = participant.replayCount ?? 0;
+          usedAttempts = participant.usedAttempts ?? 0;
+          bestScore = participant.score ?? 0;
+          attemptsLeft = this.getAttemptsLeft(replayCount, usedAttempts);
+          nextReplayPrice = this.getNextReplayPrice(replayCount);
+        }
 
         const u = await this.prisma.user.findUnique({
           where: { id: userId },
@@ -314,6 +348,11 @@ export class EventTournamentService {
       joinLeftSec: Math.ceil(joinLeftMs / 1000),
       joined,
       coins,
+      replayCount,
+      usedAttempts,
+      attemptsLeft,
+      nextReplayPrice,
+      bestScore,
       participants: participants.map((p, index) => ({
         place: index + 1,
         userId: p.userId,
@@ -370,10 +409,95 @@ export class EventTournamentService {
           tournamentId: t.id,
           score: 0,
           payWith: 'coins',
+          replayCount: 0,
+          usedAttempts: 0,
         },
       });
 
       return { joined: true, tournamentId: t.id, slug };
+    });
+  }
+
+  async buyReplay(authHeader: string, tournamentId: number) {
+    const userId = this.getUserIdFromToken(authHeader);
+
+    const t = await this.prisma.tournament.findUnique({
+      where: { id: tournamentId },
+    });
+
+    if (!t) {
+      throw new BadRequestException('Tournament not found');
+    }
+
+    if (t.status !== TournamentStatus.ACTIVE || new Date() >= t.endsAt) {
+      throw new BadRequestException('Tournament not active');
+    }
+
+    const participant = await this.prisma.tournamentParticipant.findUnique({
+      where: {
+        userId_tournamentId: {
+          userId,
+          tournamentId,
+        },
+      },
+    });
+
+    if (!participant) {
+      throw new BadRequestException('You are not joined');
+    }
+
+    const replayCount = participant.replayCount ?? 0;
+    const usedAttempts = participant.usedAttempts ?? 0;
+    const attemptsLeft = this.getAttemptsLeft(replayCount, usedAttempts);
+
+    if (attemptsLeft > 0) {
+      throw new BadRequestException('You still have attempts left');
+    }
+
+    const nextPrice = this.getNextReplayPrice(replayCount);
+
+    if (nextPrice === null) {
+      throw new BadRequestException('Replay limit reached');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { coins: true, isBlocked: true },
+      });
+
+      if (!user) {
+        throw new BadRequestException('User not found');
+      }
+
+      if (user.isBlocked) {
+        throw new BadRequestException('User blocked');
+      }
+
+      if (user.coins < nextPrice) {
+        throw new BadRequestException(
+          `Need ${nextPrice - user.coins} more coins`,
+        );
+      }
+
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          coins: { decrement: nextPrice },
+        },
+      });
+
+      await tx.tournamentParticipant.update({
+        where: { id: participant.id },
+        data: {
+          replayCount: { increment: 1 },
+        },
+      });
+
+      return {
+        success: true,
+        replayPrice: nextPrice,
+      };
     });
   }
 
@@ -391,14 +515,31 @@ export class EventTournamentService {
     });
 
     if (!p) return { updated: false };
-    if (score <= p.score) return { updated: false };
+
+    const replayCount = p.replayCount ?? 0;
+    const usedAttempts = p.usedAttempts ?? 0;
+    const attemptsLeft = this.getAttemptsLeft(replayCount, usedAttempts);
+
+    if (attemptsLeft <= 0) {
+      return { updated: false, reason: 'NO_ATTEMPTS_LEFT' };
+    }
+
+    const currentBest = p.score ?? 0;
+    const newBest = score > currentBest ? score : currentBest;
 
     await this.prisma.tournamentParticipant.update({
       where: { id: p.id },
-      data: { score },
+      data: {
+        usedAttempts: { increment: 1 },
+        score: newBest,
+      },
     });
 
-    return { updated: true };
+    return {
+      updated: true,
+      bestScore: newBest,
+      attemptsLeft: this.getAttemptsLeft(replayCount, usedAttempts + 1),
+    };
   }
 
   // ───────────────── DAILY REMINDER ─────────────────
@@ -437,19 +578,19 @@ export class EventTournamentService {
           await this.safeSendTelegramMessage(
             String(user.telegramId),
             `🔥 Новый турнир уже идёт!\n\n` +
-              `🏆 ${cfg.title}\n` +
-              `💰 Призовой фонд: ${cfg.prizePool} coin\n` +
-              `🎟 Вход: ${cfg.entryFee} coin\n` +
-              `⏳ Длительность: 5 дней\n\n` +
-              `Залетай и поборись за топ-7 🚀`,
+            `🏆 ${cfg.title}\n` +
+            `💰 Призовой фонд: ${cfg.prizePool} coin\n` +
+            `🎟 Вход: ${cfg.entryFee} coin\n` +
+            `⏳ Длительность: 5 дней\n\n` +
+            `Залетай и поборись за топ-7 🚀`,
           );
         } else {
           await this.safeSendTelegramMessage(
             String(user.telegramId),
             `🏆 Турнир продолжается!\n\n` +
-              `${cfg.title}\n` +
-              `Твой результат уже сохранён, но ты ещё можешь улучшить счёт 🔥\n\n` +
-              `Зайди в игру и поднимись выше в таблице лидеров 🚀`,
+            `${cfg.title}\n` +
+            `Твой результат уже сохранён, но ты ещё можешь улучшить счёт 🔥\n\n` +
+            `Зайди в игру и поднимись выше в таблице лидеров 🚀`,
           );
         }
       }

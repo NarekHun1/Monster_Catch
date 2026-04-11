@@ -5,6 +5,8 @@ import {
   Controller,
   Get,
   Headers,
+  Param,
+  ParseIntPipe,
   Post,
   Query,
 } from '@nestjs/common';
@@ -85,5 +87,16 @@ export class EventTournamentController {
     }
 
     return this.service.checkDailyEventNotice(authHeader, slug);
+  }
+  @Post(':id/replay')
+  async buyReplay(
+    @Param('id', ParseIntPipe) id: number,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    if (!authHeader) {
+      throw new BadRequestException('authorization is required');
+    }
+
+    return this.service.buyReplay(authHeader, id);
   }
 }
