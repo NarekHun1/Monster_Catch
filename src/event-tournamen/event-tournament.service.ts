@@ -1,4 +1,4 @@
-// src/event-tournament/event-tournament.service.ts
+// src/event-tournamen/event-tournament.service.ts
 import {
   BadRequestException,
   Injectable,
@@ -102,6 +102,87 @@ export class EventTournamentService {
   // ───────────────── FIXED PRIZES TOP-7 ─────────────────
   private getFixedPrizes(): number[] {
     return [1670, 668, 334, 167, 167, 167, 167];
+  }
+
+  // ───────────────── DAILY NOTICE ─────────────────
+  async checkDailyEventNotice(authHeader: string, slug: string) {
+    const userId = this.getUserIdFromToken(authHeader);
+    const cfg = this.getConfigBySlug(slug);
+    const t = await this.getOrCreateEventTournament(cfg);
+
+    const now = new Date();
+
+    if (
+      t.status !== TournamentStatus.ACTIVE ||
+      now >= t.endsAt ||
+      now > t.joinDeadline
+    ) {
+      return {
+        showNotice: false,
+        reason: 'tournament_inactive',
+      };
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        lastEventNoticeDate: true,
+      },
+    });
+
+    if (!user) {
+      throw new BadRequestException('User not found');
+    }
+
+    const alreadyJoined = await this.prisma.tournamentParticipant.findUnique({
+      where: {
+        userId_tournamentId: {
+          userId,
+          tournamentId: t.id,
+        },
+      },
+    });
+
+    if (alreadyJoined) {
+      return {
+        showNotice: false,
+        reason: 'already_joined',
+      };
+    }
+
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const alreadyShownToday =
+      !!user.lastEventNoticeDate && user.lastEventNoticeDate >= startOfToday;
+
+    if (alreadyShownToday) {
+      return {
+        showNotice: false,
+        reason: 'already_shown_today',
+      };
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        lastEventNoticeDate: now,
+      },
+    });
+
+    return {
+      showNotice: true,
+      reason: 'show_first_time_today',
+      tournament: {
+        tournamentId: t.id,
+        slug: t.slug,
+        title: (t.rulesJson as any)?.title ?? cfg.title,
+        entryFee: t.entryFee,
+        prizePool: t.prizePool,
+        endsAt: t.endsAt,
+      },
+    };
   }
 
   // ───────────────── CREATE / GET ─────────────────

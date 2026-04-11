@@ -69,6 +69,7 @@ model User {
   OnlinePresence            OnlinePresence[]
   sentTournamentInvites     TournamentInvite[]      @relation("TournamentInviteFromUser")
   receivedTournamentInvites TournamentInvite[]      @relation("TournamentInviteToUser")
+  lastEventNoticeDate       DateTime?
 
   @@index([lastSeenAt])
   @@index([createdAt])
