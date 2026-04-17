@@ -382,7 +382,9 @@ export class GameService {
 
     if (metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 18) {
       suspicionScore += 1;
-      reasons.push(`extremely fast reaction sample: ${metrics.fastestReactionMs}ms`);
+      reasons.push(
+        `extremely fast reaction sample: ${metrics.fastestReactionMs}ms`,
+      );
     }
 
     if (
@@ -391,7 +393,9 @@ export class GameService {
       metrics.avgReactionMs < 50
     ) {
       suspicionScore += 1;
-      reasons.push(`very fast avg reaction: ${metrics.avgReactionMs.toFixed(1)}ms`);
+      reasons.push(
+        `very fast avg reaction: ${metrics.avgReactionMs.toFixed(1)}ms`,
+      );
     }
 
     if (roboticIntervals) {
@@ -546,6 +550,86 @@ export class GameService {
     });
   }
 
+  private buildFinishResponse(params: {
+    mode: 'legacy' | 'v2';
+    updatedGame: any;
+    updatedUser: any;
+    finalScore: number;
+    serverScore?: number;
+    clientScore?: number;
+    scoreDelta?: number;
+    xpGained: number;
+    leveledUp: boolean;
+    starsEarned: number;
+    meatEarned: number;
+    melasCount: number;
+    suspicionScore?: number;
+    suspicionReasons?: string[];
+    metrics?: Partial<TapMetrics>;
+    referralRewardTickets: number;
+  }) {
+    const {
+      mode,
+      updatedGame,
+      updatedUser,
+      finalScore,
+      serverScore,
+      clientScore,
+      scoreDelta,
+      xpGained,
+      leveledUp,
+      starsEarned,
+      meatEarned,
+      melasCount,
+      suspicionScore,
+      suspicionReasons,
+      metrics,
+      referralRewardTickets,
+    } = params;
+
+    return {
+      ok: true,
+      mode,
+
+      // главное поле для фронта
+      finalScore,
+      displayScore: finalScore,
+      savedScore: finalScore,
+
+      game: updatedGame,
+
+      serverScore: serverScore ?? finalScore,
+      clientScore: clientScore ?? finalScore,
+      scoreDelta: scoreDelta ?? 0,
+
+      starsEarned,
+      totalStars: updatedUser.stars,
+
+      level: updatedUser.level,
+      xp: updatedUser.xp,
+      xpGained,
+      leveledUp,
+
+      melasCount,
+      meatEarned,
+      totalMeat: updatedUser.meat,
+
+      suspicionScore: suspicionScore ?? 0,
+      suspicionReasons: suspicionReasons ?? [],
+
+      emptyClicks: metrics?.emptyClicks ?? 0,
+      hitRate: metrics?.hitRate ?? 0,
+      avgIntervalMs: metrics?.avgIntervalMs ?? 0,
+      intervalStdMs: metrics?.intervalStdMs ?? 0,
+      avgReactionMs: metrics?.avgReactionMs ?? null,
+      reactionStdMs: metrics?.reactionStdMs ?? null,
+      fastestReactionMs: metrics?.fastestReactionMs ?? null,
+      longestHitStreak: metrics?.longestHitStreak ?? 0,
+
+      referralRewardTickets,
+    };
+  }
+
   async finishGame(
     token: string,
     gameId: number,
@@ -593,7 +677,9 @@ export class GameService {
     const scoreSafe = Number.isFinite(score) ? Math.floor(score) : 0;
     const clicksSafe = Number.isFinite(clicks) ? Math.floor(clicks) : 0;
     const epicCountSafe = Number.isFinite(epicCount) ? Math.floor(epicCount) : 0;
-    const melasCountSafe = Number.isFinite(melasCount) ? Math.floor(melasCount) : 0;
+    const melasCountSafe = Number.isFinite(melasCount)
+      ? Math.floor(melasCount)
+      : 0;
 
     if ([scoreSafe, clicksSafe, epicCountSafe, melasCountSafe].some((v) => v < 0)) {
       throw new BadRequestException('Negative values are not allowed');
@@ -671,9 +757,10 @@ export class GameService {
       throw new BadRequestException('Suspicious epic ratio');
     }
 
-    const starsEarned = this.getStarsEarned(scoreSafe);
+    const finalScore = scoreSafe;
+    const starsEarned = this.getStarsEarned(finalScore);
     const meatEarned = melasCountSafe;
-    const xpGained = Math.floor(scoreSafe / 2);
+    const xpGained = Math.floor(finalScore / 2);
 
     let newLevel = user.level;
     let newXp = user.xp + xpGained;
@@ -689,7 +776,7 @@ export class GameService {
       this.prisma.game.update({
         where: { id: gameId },
         data: {
-          score: scoreSafe,
+          score: finalScore,
           clicks: clicksSafe,
           epicCount: epicCountSafe,
           melasCount: melasCountSafe,
@@ -772,22 +859,18 @@ export class GameService {
       }
     }
 
-    return {
-      ok: true,
+    return this.buildFinishResponse({
       mode: 'legacy',
-      game: updatedGame,
-      serverScore: scoreSafe,
-      starsEarned,
-      totalStars: updatedUser.stars,
-      level: updatedUser.level,
-      xp: updatedUser.xp,
+      updatedGame,
+      updatedUser,
+      finalScore,
       xpGained,
       leveledUp,
+      starsEarned,
       meatEarned,
-      totalMeat: updatedUser.meat,
       melasCount: melasCountSafe,
       referralRewardTickets,
-    };
+    });
   }
 
   async finishGameV2(
@@ -907,13 +990,13 @@ export class GameService {
     const epicDelta = Math.abs(clientEpicSafe - metrics.epicHits);
     const melasDelta = Math.abs(clientMelasSafe - metrics.melasHits);
 
-    let hasExtremeMismatch =
+    const hasExtremeMismatch =
       scoreDelta > 160 ||
       clicksDelta > 45 ||
       epicDelta > 15 ||
       melasDelta > 15;
 
-    let hasSoftMismatch =
+    const hasSoftMismatch =
       scoreDelta > 80 ||
       clicksDelta > 20 ||
       epicDelta > 8 ||
@@ -991,13 +1074,10 @@ export class GameService {
       throw new BadRequestException('Client metrics mismatch');
     }
 
-    // Главное исправление:
-    // если клиентские данные валидные и серверный score меньше,
-    // берем максимум, чтобы не терять очки из-за неполных rawTaps
-    let effectiveScore = serverScore;
-    let effectiveHits = metrics.hits;
-    let effectiveEpicHits = metrics.epicHits;
-    let effectiveMelasHits = metrics.melasHits;
+    let finalScore = serverScore;
+    let finalHits = metrics.hits;
+    let finalEpicHits = metrics.epicHits;
+    let finalMelasHits = metrics.melasHits;
 
     const canUseClientResult =
       clientSummaryValid &&
@@ -1008,19 +1088,19 @@ export class GameService {
       suspicionScore < 14;
 
     if (canUseClientResult) {
-      effectiveScore = clientScoreSafe;
-      effectiveHits = clientClicksSafe;
-      effectiveEpicHits = clientEpicSafe;
-      effectiveMelasHits = clientMelasSafe;
+      finalScore = clientScoreSafe;
+      finalHits = clientClicksSafe;
+      finalEpicHits = clientEpicSafe;
+      finalMelasHits = clientMelasSafe;
 
       reasons.push(
         `used client summary fallback (serverScore=${serverScore}, clientScore=${clientScoreSafe})`,
       );
     }
 
-    const starsEarned = this.getStarsEarned(effectiveScore);
-    const meatEarned = effectiveMelasHits;
-    const xpGained = Math.floor(effectiveScore / 2);
+    const starsEarned = this.getStarsEarned(finalScore);
+    const meatEarned = finalMelasHits;
+    const xpGained = Math.floor(finalScore / 2);
 
     let newLevel = user.level;
     let newXp = user.xp + xpGained;
@@ -1047,10 +1127,10 @@ export class GameService {
       this.prisma.game.update({
         where: { id: gameId },
         data: {
-          score: effectiveScore,
-          clicks: effectiveHits,
-          epicCount: effectiveEpicHits,
-          melasCount: effectiveMelasHits,
+          score: finalScore,
+          clicks: finalHits,
+          epicCount: finalEpicHits,
+          melasCount: finalMelasHits,
           emptyClicks: metrics.emptyClicks,
           hitRate: metrics.hitRate,
           avgIntervalMs: metrics.avgIntervalMs,
@@ -1084,13 +1164,13 @@ export class GameService {
       }),
     ]);
 
-    if (effectiveScore >= 500 || suspicionScore >= 5) {
+    if (finalScore >= 500 || suspicionScore >= 5) {
       console.warn('🟠 SUSPICIOUS BUT COUNTED GAME', {
         userId,
         gameId,
         durationMs,
         serverScore,
-        effectiveScore,
+        finalScore,
         clientScore,
         suspicionScore,
         reasons,
@@ -1144,35 +1224,24 @@ export class GameService {
       }
     }
 
-    return {
-      ok: true,
+    return this.buildFinishResponse({
       mode: 'v2',
-      game: updatedGame,
+      updatedGame,
+      updatedUser,
+      finalScore,
       serverScore,
-      effectiveScore,
-      clientScore,
+      clientScore: clientScoreSafe,
       scoreDelta,
-      starsEarned,
-      totalStars: updatedUser.stars,
-      level: updatedUser.level,
-      xp: updatedUser.xp,
       xpGained,
       leveledUp,
-      melasCount: effectiveMelasHits,
+      starsEarned,
       meatEarned,
-      totalMeat: updatedUser.meat,
+      melasCount: finalMelasHits,
       suspicionScore,
       suspicionReasons: reasons,
-      emptyClicks: metrics.emptyClicks,
-      hitRate: metrics.hitRate,
-      avgIntervalMs: metrics.avgIntervalMs,
-      intervalStdMs: metrics.intervalStdMs,
-      avgReactionMs: metrics.avgReactionMs,
-      reactionStdMs: metrics.reactionStdMs,
-      fastestReactionMs: metrics.fastestReactionMs,
-      longestHitStreak: metrics.longestHitStreak,
+      metrics,
       referralRewardTickets,
-    };
+    });
   }
 
   async getDailyQuests(token: string) {
@@ -1196,7 +1265,10 @@ export class GameService {
     if (!user) throw new UnauthorizedException('User not found');
 
     const totalClicks = gamesToday.reduce((sum, g) => sum + (g.clicks ?? 0), 0);
-    const totalEpics = gamesToday.reduce((sum, g) => sum + (g.epicCount ?? 0), 0);
+    const totalEpics = gamesToday.reduce(
+      (sum, g) => sum + (g.epicCount ?? 0),
+      0,
+    );
     const gamesCount = gamesToday.length;
 
     const quests = [
@@ -1277,7 +1349,10 @@ export class GameService {
     if (!user) throw new UnauthorizedException('User not found');
 
     const totalClicks = gamesToday.reduce((sum, g) => sum + (g.clicks ?? 0), 0);
-    const totalEpics = gamesToday.reduce((sum, g) => sum + (g.epicCount ?? 0), 0);
+    const totalEpics = gamesToday.reduce(
+      (sum, g) => sum + (g.epicCount ?? 0),
+      0,
+    );
     const gamesCount = gamesToday.length;
 
     let completed = false;
