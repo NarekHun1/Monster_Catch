@@ -348,49 +348,58 @@ export class GameService {
       roundDurationMs > 0 ? durationMs / roundDurationMs : 1;
 
     const roboticIntervals =
+      metrics.totalClicks >= 120 &&
       metrics.avgIntervalMs > 0 &&
       metrics.avgIntervalMs < 95 &&
       metrics.intervalStdMs > 0 &&
-      metrics.intervalStdMs < 14;
+      metrics.intervalStdMs < 12;
 
     const roboticReactions =
+      metrics.totalClicks >= 100 &&
       metrics.avgReactionMs !== null &&
       metrics.avgReactionMs < 95 &&
       metrics.reactionStdMs !== null &&
       metrics.reactionStdMs > 0 &&
-      metrics.reactionStdMs < 16;
+      metrics.reactionStdMs < 12;
 
-    if (metrics.totalClicks >= 140 && metrics.emptyClicks === 0) {
-      suspicionScore += 2;
-      reasons.push('no misses in very long round');
-    }
+    const veryLowMissesLongRound =
+      metrics.totalClicks >= 180 && metrics.emptyClicks <= 1;
 
-    if (metrics.totalClicks >= 180 && metrics.hitRate > 0.985) {
-      suspicionScore += 2;
-      reasons.push(
-        `hitRate unrealistically high: ${metrics.hitRate.toFixed(3)}`,
+    const ultraHighHitRate =
+      metrics.totalClicks >= 180 && metrics.hitRate >= 0.992;
+
+    const impossibleCombo =
+      metrics.totalClicks >= 160 &&
+      clicksPerSecond > 9.8 &&
+      metrics.hitRate > 0.99 &&
+      (
+        (metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 30) ||
+        (metrics.avgReactionMs !== null && metrics.avgReactionMs < 70)
       );
-    }
 
-    if (metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 55) {
+    if (veryLowMissesLongRound) {
       suspicionScore += 2;
-      reasons.push(`very fast reaction: ${metrics.fastestReactionMs}ms`);
+      reasons.push(`almost no misses in long round: ${metrics.emptyClicks}`);
     }
 
-    if (metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 45) {
-      suspicionScore += 3;
-      reasons.push(`near-impossible reaction: ${metrics.fastestReactionMs}ms`);
+    if (ultraHighHitRate) {
+      suspicionScore += 2;
+      reasons.push(`ultra high hitRate: ${metrics.hitRate.toFixed(3)}`);
+    }
+
+    // Быстрая реакция сама по себе не банит
+    if (metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 32) {
+      suspicionScore += 1;
+      reasons.push(`extremely fast reaction sample: ${metrics.fastestReactionMs}ms`);
     }
 
     if (
       metrics.avgReactionMs !== null &&
-      metrics.totalClicks >= 120 &&
-      metrics.avgReactionMs < 95
+      metrics.totalClicks >= 140 &&
+      metrics.avgReactionMs < 78
     ) {
-      suspicionScore += 2;
-      reasons.push(
-        `avg reaction too fast: ${metrics.avgReactionMs.toFixed(1)}ms`,
-      );
+      suspicionScore += 1;
+      reasons.push(`very fast avg reaction: ${metrics.avgReactionMs.toFixed(1)}ms`);
     }
 
     if (roboticIntervals) {
@@ -407,48 +416,54 @@ export class GameService {
       );
     }
 
-    if (metrics.longestHitStreak >= 110) {
+    if (metrics.longestHitStreak >= 130) {
       suspicionScore += 2;
-      reasons.push(`very long perfect streak: ${metrics.longestHitStreak}`);
+      reasons.push(`very long hit streak: ${metrics.longestHitStreak}`);
     }
 
-    if (metrics.longestHitStreak >= 150) {
-      suspicionScore += 3;
-      reasons.push(`extreme perfect streak: ${metrics.longestHitStreak}`);
+    if (metrics.longestHitStreak >= 170) {
+      suspicionScore += 2;
+      reasons.push(`extreme hit streak: ${metrics.longestHitStreak}`);
     }
 
-    if (clicksPerSecond > 8.5) {
-      suspicionScore += 2;
+    // Высокая скорость — только слабый сигнал
+    if (clicksPerSecond > 9.2) {
+      suspicionScore += 1;
       reasons.push(`very fast clicksPerSecond: ${clicksPerSecond.toFixed(2)}`);
     }
 
-    if (clicksPerSecond > 9.5) {
-      suspicionScore += 3;
+    if (clicksPerSecond > 10.2) {
+      suspicionScore += 2;
       reasons.push(`extreme clicksPerSecond: ${clicksPerSecond.toFixed(2)}`);
     }
 
-    if (metrics.totalClicks >= 100 && epicRatio > 0.34) {
+    if (metrics.totalClicks >= 100 && epicRatio > 0.36) {
       suspicionScore += 2;
       reasons.push(`high epic ratio: ${epicRatio.toFixed(3)}`);
     }
 
-    if (metrics.totalClicks >= 100 && epicRatio > 0.42) {
+    if (metrics.totalClicks >= 100 && epicRatio > 0.44) {
       suspicionScore += 3;
       reasons.push(`extreme epic ratio: ${epicRatio.toFixed(3)}`);
     }
 
-    if (serverScore >= 650 && (roboticIntervals || roboticReactions)) {
-      suspicionScore += 2;
+    if (serverScore >= 680 && (roboticIntervals || roboticReactions)) {
+      suspicionScore += 3;
       reasons.push(`high score combined with robotic metrics: ${serverScore}`);
     }
 
     if (
       normalizedDuration < 0.35 &&
-      serverScore >= 350 &&
-      (roboticIntervals || roboticReactions || clicksPerSecond > 9)
+      serverScore >= 380 &&
+      (roboticIntervals || roboticReactions)
     ) {
       suspicionScore += 3;
-      reasons.push('high score in too short duration with suspicious speed');
+      reasons.push('high score in too short duration with robotic pattern');
+    }
+
+    if (impossibleCombo) {
+      suspicionScore += 4;
+      reasons.push('impossible speed + accuracy combo');
     }
 
     return { suspicionScore, reasons };
@@ -887,24 +902,6 @@ export class GameService {
       throw new BadRequestException('Too many taps');
     }
 
-    if (metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 40) {
-      await this.invalidateGame({
-        gameId,
-        userId,
-        reason: `impossible fastest reaction: ${metrics.fastestReactionMs}ms`,
-      });
-      throw new BadRequestException('Impossible reaction speed');
-    }
-
-    if (metrics.avgIntervalMs > 0 && metrics.avgIntervalMs < 58) {
-      await this.invalidateGame({
-        gameId,
-        userId,
-        reason: `impossible avg interval: ${metrics.avgIntervalMs.toFixed(1)}ms`,
-      });
-      throw new BadRequestException('Impossible click speed');
-    }
-
     const serverScore = this.calculateServerScore(metrics);
 
     const scoreDelta = Math.abs((clientScore || 0) - serverScore);
@@ -912,7 +909,10 @@ export class GameService {
     const epicDelta = Math.abs((clientEpicCount || 0) - metrics.epicHits);
     const melasDelta = Math.abs((clientMelasCount || 0) - metrics.melasHits);
 
-    if (scoreDelta > 40 || clicksDelta > 8 || epicDelta > 5 || melasDelta > 5) {
+    const hasExtremeMismatch =
+      scoreDelta > 60 || clicksDelta > 12 || epicDelta > 8 || melasDelta > 8;
+
+    if (hasExtremeMismatch) {
       await this.invalidateGame({
         gameId,
         userId,
@@ -923,24 +923,53 @@ export class GameService {
       throw new BadRequestException('Client metrics mismatch');
     }
 
-    const { suspicionScore, reasons } = this.buildSuspicionScore({
+    const hasSoftMismatch =
+      scoreDelta > 40 || clicksDelta > 8 || epicDelta > 5 || melasDelta > 5;
+
+    let { suspicionScore, reasons } = this.buildSuspicionScore({
       durationMs,
       roundDurationMs: ROUND_DURATION_MS,
       metrics,
       serverScore,
     });
 
+    if (hasSoftMismatch) {
+      reasons.push(
+        `soft client/server mismatch (scoreΔ=${scoreDelta}, clicksΔ=${clicksDelta}, epicΔ=${epicDelta}, melasΔ=${melasDelta})`,
+      );
+      suspicionScore += 2;
+    }
+
     const hasRobotPattern =
-      (metrics.intervalStdMs > 0 && metrics.intervalStdMs < 14) ||
-      (metrics.reactionStdMs !== null &&
+      (metrics.totalClicks >= 120 &&
+        metrics.intervalStdMs > 0 &&
+        metrics.intervalStdMs < 12) ||
+      (metrics.totalClicks >= 100 &&
+        metrics.reactionStdMs !== null &&
         metrics.reactionStdMs > 0 &&
-        metrics.reactionStdMs < 16);
+        metrics.reactionStdMs < 12);
 
     const hasImpossiblePattern =
-      (metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 40) ||
-      (metrics.avgIntervalMs > 0 && metrics.avgIntervalMs < 58);
+      metrics.totalClicks >= 160 &&
+      metrics.hitRate > 0.99 &&
+      (
+        (metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 28) ||
+        (metrics.avgReactionMs !== null && metrics.avgReactionMs < 68)
+      ) &&
+      (metrics.avgIntervalMs > 0 && metrics.avgIntervalMs < 52);
 
-    if (suspicionScore >= 11 || (suspicionScore >= 9 && hasImpossiblePattern)) {
+    if (hasRobotPattern) {
+      reasons.push('robotic tap pattern detected');
+      suspicionScore += 2;
+    }
+
+    if (hasImpossiblePattern) {
+      reasons.push('impossible human speed pattern');
+      suspicionScore += 3;
+    }
+
+    // Жесткий reject только при сильной комбинации
+    if (suspicionScore >= 13 && (hasRobotPattern || hasImpossiblePattern)) {
       await this.invalidateGame({
         gameId,
         userId,
@@ -951,11 +980,15 @@ export class GameService {
       throw new BadRequestException('Suspicious game detected');
     }
 
-    if (serverScore >= 650 && suspicionScore >= 8 && hasRobotPattern) {
+    if (
+      serverScore >= 700 &&
+      suspicionScore >= 10 &&
+      (hasRobotPattern || hasImpossiblePattern)
+    ) {
       await this.invalidateGame({
         gameId,
         userId,
-        reason: 'anti-cheat reject: high score with robotic metrics',
+        reason: 'anti-cheat reject: extreme score with suspicious pattern',
         suspicionScore,
         suspicionReasons: reasons,
       });
