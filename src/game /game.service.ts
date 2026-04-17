@@ -344,7 +344,6 @@ export class GameService {
     const normalizedDuration =
       roundDurationMs > 0 ? durationMs / roundDurationMs : 1;
 
-    // Ослаблено под multi-touch
     const roboticIntervals =
       metrics.totalClicks >= 180 &&
       metrics.avgIntervalMs > 0 &&
@@ -370,10 +369,8 @@ export class GameService {
       metrics.totalClicks >= 220 &&
       clicksPerSecond > 13.5 &&
       metrics.hitRate > 0.995 &&
-      (
-        (metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 18) ||
-        (metrics.avgReactionMs !== null && metrics.avgReactionMs < 45)
-      ) &&
+      ((metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 18) ||
+        (metrics.avgReactionMs !== null && metrics.avgReactionMs < 45)) &&
       metrics.intervalStdMs > 0 &&
       metrics.intervalStdMs < 4;
 
@@ -389,7 +386,9 @@ export class GameService {
 
     if (metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 18) {
       suspicionScore += 1;
-      reasons.push(`extremely fast reaction sample: ${metrics.fastestReactionMs}ms`);
+      reasons.push(
+        `extremely fast reaction sample: ${metrics.fastestReactionMs}ms`,
+      );
     }
 
     if (
@@ -398,7 +397,9 @@ export class GameService {
       metrics.avgReactionMs < 50
     ) {
       suspicionScore += 1;
-      reasons.push(`very fast avg reaction: ${metrics.avgReactionMs.toFixed(1)}ms`);
+      reasons.push(
+        `very fast avg reaction: ${metrics.avgReactionMs.toFixed(1)}ms`,
+      );
     }
 
     if (roboticIntervals) {
@@ -649,7 +650,7 @@ export class GameService {
     }
 
     const epicRatio = clicksSafe > 0 ? epicCountSafe / clicksSafe : 0;
-    if (clicksSafe >= 120 && epicRatio > 0.70) {
+    if (clicksSafe >= 120 && epicRatio > 0.7) {
       await this.invalidateGame({
         gameId,
         userId,
@@ -862,7 +863,6 @@ export class GameService {
       throw new BadRequestException('No taps provided');
     }
 
-    // multi-touch friendly
     if (metrics.totalClicks > 900) {
       await this.invalidateGame({
         gameId,
@@ -874,13 +874,47 @@ export class GameService {
 
     const serverScore = this.calculateServerScore(metrics);
 
-    const scoreDelta = Math.abs((clientScore || 0) - serverScore);
-    const clicksDelta = Math.abs((clientClicks || 0) - metrics.totalClicks);
-    const epicDelta = Math.abs((clientEpicCount || 0) - metrics.epicHits);
-    const melasDelta = Math.abs((clientMelasCount || 0) - metrics.melasHits);
+    const clientScoreSafe = Number.isFinite(clientScore)
+      ? Math.floor(clientScore)
+      : 0;
+    const clientClicksSafe = Number.isFinite(clientClicks)
+      ? Math.floor(clientClicks)
+      : 0;
+    const clientEpicSafe = Number.isFinite(clientEpicCount)
+      ? Math.floor(clientEpicCount)
+      : 0;
+    const clientMelasSafe = Number.isFinite(clientMelasCount)
+      ? Math.floor(clientMelasCount)
+      : 0;
 
-    const hasExtremeMismatch =
-      scoreDelta > 120 || clicksDelta > 80 || epicDelta > 25 || melasDelta > 25;
+    // clicks на фронте = только удачные хиты
+    const scoreDelta = Math.abs(clientScoreSafe - serverScore);
+    const clicksDelta = Math.abs(clientClicksSafe - metrics.hits);
+    const epicDelta = Math.abs(clientEpicSafe - metrics.epicHits);
+    const melasDelta = Math.abs(clientMelasSafe - metrics.melasHits);
+
+    // если массив на фронте уже урезан, mismatch ожидаем
+    const tapsLookTrimmed = rawTaps.length >= 300;
+
+    let hasExtremeMismatch = false;
+    let hasSoftMismatch = false;
+
+    if (tapsLookTrimmed) {
+      hasSoftMismatch =
+        scoreDelta > 220 ||
+        clicksDelta > 120 ||
+        epicDelta > 20 ||
+        melasDelta > 20;
+    } else {
+      hasExtremeMismatch =
+        scoreDelta > 120 ||
+        clicksDelta > 35 ||
+        epicDelta > 12 ||
+        melasDelta > 12;
+
+      hasSoftMismatch =
+        scoreDelta > 70 || clicksDelta > 18 || epicDelta > 6 || melasDelta > 6;
+    }
 
     if (hasExtremeMismatch) {
       await this.invalidateGame({
@@ -893,9 +927,6 @@ export class GameService {
       throw new BadRequestException('Client metrics mismatch');
     }
 
-    const hasSoftMismatch =
-      scoreDelta > 70 || clicksDelta > 40 || epicDelta > 14 || melasDelta > 14;
-
     let { suspicionScore, reasons } = this.buildSuspicionScore({
       durationMs,
       roundDurationMs: ROUND_DURATION_MS,
@@ -907,7 +938,7 @@ export class GameService {
       reasons.push(
         `soft client/server mismatch (scoreΔ=${scoreDelta}, clicksΔ=${clicksDelta}, epicΔ=${epicDelta}, melasΔ=${melasDelta})`,
       );
-      suspicionScore += 1;
+      suspicionScore += tapsLookTrimmed ? 0 : 1;
     }
 
     const hasRobotPattern =
@@ -926,16 +957,13 @@ export class GameService {
     const hasImpossiblePattern =
       metrics.totalClicks >= 220 &&
       metrics.hitRate > 0.995 &&
-      (
-        (metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 18) ||
-        (metrics.avgReactionMs !== null && metrics.avgReactionMs < 45)
-      ) &&
+      ((metrics.fastestReactionMs !== null && metrics.fastestReactionMs < 18) ||
+        (metrics.avgReactionMs !== null && metrics.avgReactionMs < 45)) &&
       metrics.avgIntervalMs > 0 &&
       metrics.avgIntervalMs < 45 &&
       metrics.intervalStdMs > 0 &&
       metrics.intervalStdMs < 4;
 
-    // Hard reject только при реально сильной комбинации
     if (suspicionScore >= 14 && hasImpossiblePattern) {
       await this.invalidateGame({
         gameId,
