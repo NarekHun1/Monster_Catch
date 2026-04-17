@@ -33,8 +33,8 @@ type NormalizedTap = {
 };
 
 type TapMetrics = {
-  totalClicks: number;
-  hits: number;
+  totalClicks: number; // все тапы
+  hits: number; // только удачные хиты
   emptyClicks: number;
   epicHits: number;
   melasHits: number;
@@ -65,6 +65,9 @@ export class GameService {
     private readonly config: ConfigService,
     private readonly notificationService: NotificationService,
   ) {}
+
+  private readonly MAX_TAPS_SOFT_TRIM_HINT = 300;
+  private readonly MAX_TOTAL_TAPS = 900;
 
   private async blockUser(userId: number, reason: string) {
     await this.prisma.user.update({
@@ -340,7 +343,7 @@ export class GameService {
     const clicksPerSecond =
       durationMs > 0 ? metrics.totalClicks / (durationMs / 1000) : 0;
 
-    const epicRatio = metrics.epicHits / Math.max(1, metrics.totalClicks);
+    const epicRatio = metrics.epicHits / Math.max(1, metrics.hits);
     const normalizedDuration =
       roundDurationMs > 0 ? durationMs / roundDurationMs : 1;
 
@@ -436,12 +439,12 @@ export class GameService {
       reasons.push(`extreme clicksPerSecond: ${clicksPerSecond.toFixed(2)}`);
     }
 
-    if (metrics.totalClicks >= 160 && epicRatio > 0.42) {
+    if (metrics.hits >= 160 && epicRatio > 0.42) {
       suspicionScore += 1;
       reasons.push(`high epic ratio: ${epicRatio.toFixed(3)}`);
     }
 
-    if (metrics.totalClicks >= 160 && epicRatio > 0.52) {
+    if (metrics.hits >= 160 && epicRatio > 0.52) {
       suspicionScore += 3;
       reasons.push(`extreme epic ratio: ${epicRatio.toFixed(3)}`);
     }
@@ -476,6 +479,37 @@ export class GameService {
 
   private getXpForNextLevel(level: number): number {
     return 100 + (level - 1) * 500;
+  }
+
+  private isValidClientSummary(params: {
+    score: number;
+    clicks: number;
+    epicCount: number;
+    melasCount: number;
+  }): boolean {
+    const { score, clicks, epicCount, melasCount } = params;
+
+    if (![score, clicks, epicCount, melasCount].every(Number.isFinite)) {
+      return false;
+    }
+
+    if (
+      score < 0 ||
+      clicks < 0 ||
+      epicCount < 0 ||
+      melasCount < 0
+    ) {
+      return false;
+    }
+
+    if (clicks > this.MAX_TOTAL_TAPS) return false;
+    if (epicCount > clicks) return false;
+    if (melasCount > clicks) return false;
+
+    const epicRatio = clicks > 0 ? epicCount / clicks : 0;
+    if (clicks >= 120 && epicRatio > 0.7) return false;
+
+    return true;
   }
 
   private async invalidateGame(params: {
@@ -622,7 +656,7 @@ export class GameService {
       throw new BadRequestException('Round time exceeded (not counted)');
     }
 
-    if (clicksSafe > 900) {
+    if (clicksSafe > this.MAX_TOTAL_TAPS) {
       await this.invalidateGame({
         gameId,
         userId,
@@ -678,7 +712,7 @@ export class GameService {
         where: { id: gameId },
         data: {
           score: scoreSafe,
-          clicks: clicksSafe,
+          clicks: clicksSafe, // legacy: здесь clicks уже считаем как хиты
           epicCount: epicCountSafe,
           melasCount: melasCountSafe,
           emptyClicks: 0,
@@ -863,7 +897,7 @@ export class GameService {
       throw new BadRequestException('No taps provided');
     }
 
-    if (metrics.totalClicks > 900) {
+    if (metrics.totalClicks > this.MAX_TOTAL_TAPS) {
       await this.invalidateGame({
         gameId,
         userId,
@@ -887,14 +921,21 @@ export class GameService {
       ? Math.floor(clientMelasCount)
       : 0;
 
-    // clicks на фронте = только удачные хиты
+    const clientSummaryValid = this.isValidClientSummary({
+      score: clientScoreSafe,
+      clicks: clientClicksSafe,
+      epicCount: clientEpicSafe,
+      melasCount: clientMelasSafe,
+    });
+
+    // фронт обычно хранит clicks как УДАЧНЫЕ попадания
     const scoreDelta = Math.abs(clientScoreSafe - serverScore);
     const clicksDelta = Math.abs(clientClicksSafe - metrics.hits);
     const epicDelta = Math.abs(clientEpicSafe - metrics.epicHits);
     const melasDelta = Math.abs(clientMelasSafe - metrics.melasHits);
 
-    // если массив на фронте уже урезан, mismatch ожидаем
-    const tapsLookTrimmed = rawTaps.length >= 300;
+    // если клиент режет taps, серверу нельзя слепо занижать счет
+    const tapsLookTrimmed = rawTaps.length >= this.MAX_TAPS_SOFT_TRIM_HINT;
 
     let hasExtremeMismatch = false;
     let hasSoftMismatch = false;
@@ -916,7 +957,7 @@ export class GameService {
         scoreDelta > 70 || clicksDelta > 18 || epicDelta > 6 || melasDelta > 6;
     }
 
-    if (hasExtremeMismatch) {
+    if (hasExtremeMismatch && !tapsLookTrimmed) {
       await this.invalidateGame({
         gameId,
         userId,
@@ -986,9 +1027,36 @@ export class GameService {
       throw new BadRequestException('Suspicious high-score game');
     }
 
-    const starsEarned = this.getStarsEarned(serverScore);
-    const meatEarned = metrics.melasHits;
-    const xpGained = Math.floor(serverScore / 2);
+    // ---------------- FIX ----------------
+    // если taps явно урезаны, но клиентские итоги валидные,
+    // не занижаем игру серверным score из неполного массива taps
+    let effectiveScore = serverScore;
+    let effectiveHits = metrics.hits;
+    let effectiveEpicHits = metrics.epicHits;
+    let effectiveMelasHits = metrics.melasHits;
+
+    if (
+      tapsLookTrimmed &&
+      clientSummaryValid &&
+      clientScoreSafe >= serverScore &&
+      clientClicksSafe >= metrics.hits &&
+      clientEpicSafe >= metrics.epicHits &&
+      clientMelasSafe >= metrics.melasHits
+    ) {
+      effectiveScore = clientScoreSafe;
+      effectiveHits = clientClicksSafe;
+      effectiveEpicHits = clientEpicSafe;
+      effectiveMelasHits = clientMelasSafe;
+
+      reasons.push(
+        `used client fallback because rawTaps look trimmed (${rawTaps.length})`,
+      );
+    }
+    // ---------------- END FIX ----------------
+
+    const starsEarned = this.getStarsEarned(effectiveScore);
+    const meatEarned = effectiveMelasHits;
+    const xpGained = Math.floor(effectiveScore / 2);
 
     let newLevel = user.level;
     let newXp = user.xp + xpGained;
@@ -1015,10 +1083,10 @@ export class GameService {
       this.prisma.game.update({
         where: { id: gameId },
         data: {
-          score: serverScore,
-          clicks: metrics.totalClicks,
-          epicCount: metrics.epicHits,
-          melasCount: metrics.melasHits,
+          score: effectiveScore,
+          clicks: effectiveHits, // ВАЖНО: теперь сохраняем ХИТЫ, а не все тапы
+          epicCount: effectiveEpicHits,
+          melasCount: effectiveMelasHits,
           emptyClicks: metrics.emptyClicks,
           hitRate: metrics.hitRate,
           avgIntervalMs: metrics.avgIntervalMs,
@@ -1052,16 +1120,18 @@ export class GameService {
       }),
     ]);
 
-    if (serverScore >= 500 || suspicionScore >= 5) {
+    if (effectiveScore >= 500 || suspicionScore >= 5) {
       console.warn('🟠 SUSPICIOUS BUT COUNTED GAME', {
         userId,
         gameId,
         durationMs,
         serverScore,
+        effectiveScore,
         clientScore,
         suspicionScore,
         reasons,
         metrics,
+        tapsLookTrimmed,
       });
     }
 
@@ -1115,7 +1185,9 @@ export class GameService {
       ok: true,
       mode: 'v2',
       game: updatedGame,
+
       serverScore,
+      effectiveScore,
       clientScore,
       scoreDelta,
 
@@ -1127,7 +1199,7 @@ export class GameService {
       xpGained,
       leveledUp,
 
-      melasCount: metrics.melasHits,
+      melasCount: effectiveMelasHits,
       meatEarned,
       totalMeat: updatedUser.meat,
 
@@ -1143,6 +1215,7 @@ export class GameService {
       fastestReactionMs: metrics.fastestReactionMs,
       longestHitStreak: metrics.longestHitStreak,
 
+      tapsLookTrimmed,
       referralRewardTickets,
     };
   }
