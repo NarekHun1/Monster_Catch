@@ -88,18 +88,18 @@ export class EventTournamentService {
     const startsAt = new Date();
 
     const endsAt = new Date();
-    endsAt.setDate(endsAt.getDate() + 5);
+    endsAt.setDate(endsAt.getDate() + 7);
 
     const joinDeadline = endsAt;
 
     return [
       {
-        slug: 'monster-april-2026',
+        slug: 'monster-may-2026',
         title: '🔥 MONSTER CATCH TOURNAMENT',
         startsAt,
         endsAt,
         joinDeadline,
-        entryFee: 80,
+        entryFee: 90,
         prizePool: 3340,
         coinsOnly: true,
       },
@@ -546,7 +546,7 @@ export class EventTournamentService {
   @Cron(CronExpression.EVERY_DAY_AT_NOON)
   async notifyUsersAboutTournament() {
     try {
-      const cfg = this.getConfigBySlug('monster-april-2026');
+      const cfg = this.getConfigBySlug('monster-may-2026');
       const t = await this.getOrCreateEventTournament(cfg);
 
       if (t.status !== TournamentStatus.ACTIVE || new Date() >= t.endsAt) {
@@ -578,19 +578,19 @@ export class EventTournamentService {
           await this.safeSendTelegramMessage(
             String(user.telegramId),
             `🔥 Новый турнир уже идёт!\n\n` +
-            `🏆 ${cfg.title}\n` +
-            `💰 Призовой фонд: ${cfg.prizePool} coin\n` +
-            `🎟 Вход: ${cfg.entryFee} coin\n` +
-            `⏳ Длительность: 5 дней\n\n` +
-            `Залетай и поборись за топ-7 🚀`,
+              `🏆 ${cfg.title}\n` +
+              `💰 Призовой фонд: ${cfg.prizePool} coin\n` +
+              `🎟 Вход: ${cfg.entryFee} coin\n` +
+              `⏳ Длительность: 7 дней\n\n` +
+              `Залетай и поборись за топ-7 🚀`,
           );
         } else {
           await this.safeSendTelegramMessage(
             String(user.telegramId),
             `🏆 Турнир продолжается!\n\n` +
-            `${cfg.title}\n` +
-            `Твой результат уже сохранён, но ты ещё можешь улучшить счёт 🔥\n\n` +
-            `Зайди в игру и поднимись выше в таблице лидеров 🚀`,
+              `${cfg.title}\n` +
+              `Твой результат уже сохранён, но ты ещё можешь улучшить счёт 🔥\n\n` +
+              `Зайди в игру и поднимись выше в таблице лидеров 🚀`,
           );
         }
       }
